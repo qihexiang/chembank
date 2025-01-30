@@ -15,12 +15,19 @@ tauri = { version = "1", features = ["shell-open"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 specta = { version = "1.0.5", features = ["tauri", "typescript"] }
-sea-orm = { version = "1.1.0", features = ["sqlx-sqlite", "macros"] }
+sea-orm = { version = "1.1.0", features = [
+    "sqlx-sqlite",
+    "runtime-tokio-rustls",
+    "macros",
+] }
 tokio = { version = "1.43.0", features = ["full"] }
 tauri-specta = { version = "1.0.2", features = ["javascript", "typescript"] }
+entities = { path = "./entities" }
+sea-schema = "0.16.1"
 
 [features]
 # This feature is used for production builds or when a dev server is not specified, DO NOT REMOVE!!
 custom-protocol = ["tauri/custom-protocol"]
 
 [workspace]
+members = ["entities"]

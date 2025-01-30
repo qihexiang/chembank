@@ -2,17 +2,13 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use sea_orm::{
-    ActiveModelTrait, ActiveValue, ColumnTrait, Condition, Database, DatabaseConnection,
-    EntityTrait, ModelTrait, PaginatorTrait, QueryFilter,
+    ActiveModelTrait, ActiveValue, ColumnTrait, Condition, ConnectionTrait, Database,
+    DatabaseConnection, EntityTrait, ModelTrait, PaginatorTrait, QueryFilter, Schema,
 };
 use tauri::State;
 use tokio::sync::Mutex;
 
-mod component;
-mod image;
-mod links;
-mod property;
-mod structure;
+use entities::*;
 
 struct AppState {
     db: Mutex<Option<DatabaseConnection>>,
@@ -25,6 +21,7 @@ async fn main() {
             db: Mutex::new(None),
         })
         .invoke_handler(tauri::generate_handler![
+            create_database,
             open_database,
             close_database,
             is_database_opened,
@@ -44,21 +41,40 @@ async fn main() {
 
 #[tauri::command]
 #[specta::specta]
+async fn create_database(state: State<'_, AppState>, filepath: String) -> Result<(), String> {
+    let mut db = state.db.lock().await;
+    if let Some(db) = db.take() {
+        db.close().await.map_err(|e| format!("无法关闭当前数据库，请确认磁盘空间充足，或强制重启程序，但可能导致最近的部分操作丢失, 详细信息：{:#?}", e))?;
+    };
+    let new_db = Database::connect(format!("sqlite://{}?mode=rw", filepath))
+        .await
+        .map_err(|e| {
+            format!(
+                "无法创建目标数据库，这可能是由于权限问题或文件损坏导致的，详细信息：{:#?}",
+                e
+            )
+        })?;
+    init_db(&new_db).await?;
+    *db = Some(new_db);
+    Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
 async fn open_database(state: State<'_, AppState>, filepath: String) -> Result<(), String> {
     let mut db = state.db.lock().await;
     if let Some(db) = db.take() {
         db.close().await.map_err(|e| format!("无法关闭当前数据库，请确认磁盘空间充足，或强制重启程序，但可能导致最近的部分操作丢失, 详细信息：{:#?}", e))?;
     };
-    *db = Some(
-        Database::connect(format!("sqlite://{}?mode=rwc", filepath))
-            .await
-            .map_err(|e| {
-                format!(
-                    "无法打开目标数据库，这可能是由于权限问题或文件损坏导致的，详细信息：{:#?}",
-                    e
-                )
-            })?,
-    );
+    let new_db = Database::connect(format!("sqlite://{}?mode=rw", filepath))
+        .await
+        .map_err(|e| {
+            format!(
+                "无法打开目标数据库，这可能是由于权限问题或文件损坏导致的，详细信息：{:#?}",
+                e
+            )
+        })?;
+    *db = Some(new_db);
     Ok(())
 }
 
@@ -345,11 +361,12 @@ async fn search_structure(
 
 #[test]
 fn export_bindings() {
-    use tauri_specta::ts;
     use specta::collect_types;
+    use tauri_specta::ts;
 
     ts::export(
         collect_types![
+            create_database,
             open_database,
             close_database,
             is_database_opened,
@@ -361,9 +378,30 @@ fn export_bindings() {
             set_image,
             set_properties,
             search_structure,
-            get_structure_detail
+            get_structure_detail,
         ],
         "../src/bindings.ts",
     )
     .unwrap();
+}
+
+async fn init_db(db: &DatabaseConnection) -> Result<(), String> {
+    let builder = db.get_database_backend();
+    let structure_stmt = Schema::new(builder).create_table_from_entity(structure::Entity);
+    let component_stmt = Schema::new(builder).create_table_from_entity(component::Entity);
+    let property_stmt = Schema::new(builder).create_table_from_entity(property::Entity);
+    let image_stmt = Schema::new(builder).create_table_from_entity(image::Entity);
+    for stmt in vec![structure_stmt, component_stmt, property_stmt, image_stmt] {
+        let stmt = builder.build(&stmt);
+        // 存在相同数据表时，不进行操作，也不报错
+        db.execute(stmt).await.map_err(|e| format!("未能完成初始化，详细信息：\n{:#?}", e))?;
+    };
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_create_db() {
+    let db = Database::connect("sqlite://./chembank.db?mode=rwc").await.unwrap();
+    init_db(&db).await.unwrap();
+    db.close().await.unwrap();
 }
