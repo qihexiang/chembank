@@ -16,15 +16,14 @@ struct AppState {
 
 #[tokio::main]
 async fn main() {
+    let db = Database::connect("sqlite:chembank.db?mode=rwc").await.unwrap();
+    let _ = init_db(&db).await;
     tauri::Builder::default()
         .manage(AppState {
-            db: Mutex::new(None),
+            db: Mutex::new(Some(db)),
         })
         .invoke_handler(tauri::generate_handler![
-            create_database,
-            open_database,
-            close_database,
-            is_database_opened,
+            reset_database,
             create_structure,
             update_structure,
             remove_structure,
@@ -41,12 +40,12 @@ async fn main() {
 
 #[tauri::command]
 #[specta::specta]
-async fn create_database(state: State<'_, AppState>, filepath: String) -> Result<(), String> {
+async fn reset_database(state: State<'_, AppState>) -> Result<(), String> {
     let mut db = state.db.lock().await;
     if let Some(db) = db.take() {
         db.close().await.map_err(|e| format!("无法关闭当前数据库，请确认磁盘空间充足，或强制重启程序，但可能导致最近的部分操作丢失, 详细信息：{:#?}", e))?;
     };
-    let new_db = Database::connect(format!("sqlite://{}?mode=rw", filepath))
+    let new_db = Database::connect("sqlite:chembank.db?mode=rwc")
         .await
         .map_err(|e| {
             format!(
@@ -57,41 +56,6 @@ async fn create_database(state: State<'_, AppState>, filepath: String) -> Result
     init_db(&new_db).await?;
     *db = Some(new_db);
     Ok(())
-}
-
-#[tauri::command]
-#[specta::specta]
-async fn open_database(state: State<'_, AppState>, filepath: String) -> Result<(), String> {
-    let mut db = state.db.lock().await;
-    if let Some(db) = db.take() {
-        db.close().await.map_err(|e| format!("无法关闭当前数据库，请确认磁盘空间充足，或强制重启程序，但可能导致最近的部分操作丢失, 详细信息：{:#?}", e))?;
-    };
-    let new_db = Database::connect(format!("sqlite://{}?mode=rw", filepath))
-        .await
-        .map_err(|e| {
-            format!(
-                "无法打开目标数据库，这可能是由于权限问题或文件损坏导致的，详细信息：{:#?}",
-                e
-            )
-        })?;
-    *db = Some(new_db);
-    Ok(())
-}
-
-#[tauri::command]
-#[specta::specta]
-async fn close_database(state: State<'_, AppState>) -> Result<(), String> {
-    let mut db = state.db.lock().await;
-    if let Some(db) = db.take() {
-        db.close().await.map_err(|e| format!("无法关闭当前数据库，请确认磁盘空间充足，或强制重启程序，但可能导致最近的部分操作丢失, 详细信息：{:#?}", e))?;
-    };
-    Ok(())
-}
-
-#[tauri::command]
-#[specta::specta]
-async fn is_database_opened(state: State<'_, AppState>) -> Result<bool, String> {
-    Ok(state.db.lock().await.is_some())
 }
 
 #[tauri::command]
@@ -366,10 +330,7 @@ fn export_bindings() {
 
     ts::export(
         collect_types![
-            create_database,
-            open_database,
-            close_database,
-            is_database_opened,
+            reset_database,
             create_structure,
             update_structure,
             remove_structure,
@@ -393,7 +354,6 @@ async fn init_db(db: &DatabaseConnection) -> Result<(), String> {
     let image_stmt = Schema::new(builder).create_table_from_entity(image::Entity);
     for stmt in vec![structure_stmt, component_stmt, property_stmt, image_stmt] {
         let stmt = builder.build(&stmt);
-        // 存在相同数据表时，不进行操作，也不报错
         db.execute(stmt).await.map_err(|e| format!("未能完成初始化，详细信息：\n{:#?}", e))?;
     };
     Ok(())
