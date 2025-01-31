@@ -12,7 +12,10 @@ import {
 } from "./bindings";
 import { Box, Button, Grid2, Slider, TextField, Typography } from "@mui/material";
 import rdkitModule from "./rdkit";
-import { message } from "@tauri-apps/api/dialog"
+import { message, open } from "@tauri-apps/api/dialog"
+import mime from "mime";
+import { readBinaryFile } from "@tauri-apps/api/fs";
+import { basename } from "@tauri-apps/api/path";
 
 type ViewState = {
     structure: Structure;
@@ -38,7 +41,7 @@ async function updateToDB(state: ViewState) {
     const { structure, image, property } = state;
     await updateStructure(structure.id, structure.name, structure.formula, structure.smiles && await smilesToCanonical(structure.smiles), structure.charge);
     if (image !== null) {
-        await setImage(structure.id, image.image, image.extension)
+        await setImage(structure.id, image.image, image.filename)
     }
     await setProperty({ ...property, structure_id: structure.id })
 }
@@ -74,6 +77,7 @@ export default function StructureView() {
         },
         image: null,
     });
+
 
     const refresh = () => getStructureDetail(Number(current_id)).then(
         ([structure, property, image, components]) => {
@@ -131,11 +135,21 @@ export default function StructureView() {
             </Box>
             <Box display={"flex"} flexDirection={"row"} gap={2}>
                 <Box width={128} height={128}>{
-                    state.image !== null ? <img style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain" }} src={URL.createObjectURL(new Blob([Uint8Array.from(state.image.image)], { type: `image/${state.image.extension}` }))}></img> : <Typography>图像未上传</Typography>
+                    state.image !== null ? <img style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain" }} src={URL.createObjectURL(new Blob([Uint8Array.from(state.image.image)], { type: mime.getType(state.image.filename) ?? `image/png` }))}></img> : <Typography>图像未上传</Typography>
                 }</Box>
                 <Grid2 container alignItems={"center"} justifyContent={"space-between"} spacing={2}>
                     <Button variant={"contained"} onClick={async () => {
-
+                        const filepath = await open({
+                            filters: [{
+                              name: 'Image',
+                              extensions: ['png', 'jpeg', 'svg', 'bmp', 'webp', 'gif', 'apng', 'tiff', 'tif', 'heif', 'heic']
+                            }]
+                          });
+                          if (filepath !== null) {
+                            const fileContent = await readBinaryFile(filepath as string)
+                            const filename = await basename(filepath as string);
+                            setState({...state, image: {structure_id: state.structure.id, filename, image: [...fileContent]}})
+                          }
                     }}>选择图片</Button>
                     {state.structure.smiles !== null ? <Button variant={"contained"} color="secondary" onClick={async () => {
                         const svg = await smilesToSVG(state.structure.smiles!);
@@ -143,7 +157,7 @@ export default function StructureView() {
                             const encoder = new TextEncoder();
                             const encode = encoder.encode(svg);
                             const image = [...encode];
-                            setState({ ...state, image: { structure_id: state.structure.id, image, extension: "svg+xml" } })
+                            setState({ ...state, image: { structure_id: state.structure.id, image, filename: "rdkit.svg" } })
                         } else {
                             await message("给出的SMILES似乎不正确")
                         }

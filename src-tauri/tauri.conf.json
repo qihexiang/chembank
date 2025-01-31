@@ -21,6 +21,12 @@
         "message": true,
         "open": true, 
         "save": true
+      },
+      "fs": {
+        "readFile": true
+      },
+      "path": {
+        "all": true
       }
     },
     "windows": [

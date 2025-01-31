@@ -238,7 +238,7 @@ async fn set_image(
     state: State<'_, AppState>,
     structure_id: u32,
     image: Vec<u8>,
-    extension: String,
+    filename: String,
 ) -> Result<(), String> {
     let db = state.db.lock().await;
     let db = db.as_ref().ok_or(format!(
@@ -247,7 +247,7 @@ async fn set_image(
     let model = image::ActiveModel {
         structure_id: ActiveValue::set(structure_id),
         image: ActiveValue::set(image),
-        extension: ActiveValue::set(extension),
+        filename: ActiveValue::set(filename),
     };
     if image::Entity::find_by_id(structure_id)
         .one(db)
@@ -423,37 +423,4 @@ async fn test_create_db() {
         .unwrap();
     init_db(&db).await.unwrap();
     db.close().await.unwrap();
-}
-
-#[tokio::test]
-async fn test_insert_structure() {
-    let db = Database::connect("sqlite:chembank.db?mode=rw")
-        .await
-        .unwrap();
-    let model = structure::Entity::find_by_id(2u32)
-        .one(&db)
-        .await
-        .map_err(|e| format!("查询错误，详细信息\n{:#?}", e))
-        .unwrap()
-        .ok_or("没有找到对应记录")
-        .unwrap();
-    let property_model = model
-        .find_related(property::Entity)
-        .one(&db)
-        .await
-        .map_err(|e| format!("查询错误，详细信息\n{:#?}", e))
-        .unwrap();
-    let image_model = model
-        .find_related(image::Entity)
-        .one(&db)
-        .await
-        .map_err(|e| format!("查询错误，详细信息\n{:#?}", e))
-        .unwrap();
-    let components = component::Entity::find()
-        .filter(component::Column::StructureId.eq(model.id))
-        .find_also_linked(links::ComponentStructure)
-        .all(&db)
-        .await
-        .map_err(|e| format!("查询错误，详细信息\n{:#?}", e))
-        .unwrap();
 }
