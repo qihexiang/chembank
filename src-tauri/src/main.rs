@@ -202,10 +202,22 @@ async fn set_component(
         component_id: ActiveValue::set(component_id),
         count: ActiveValue::Set(count),
     };
-    model
-        .save(db)
+    if component::Entity::find_by_id((structure_id, component_id))
+        .one(db)
         .await
-        .map_err(|e| format!("数据库故障，详细信息\n{:#?}", e))?;
+        .map_err(|e| format!("数据库错误，详细信息：\n{:#?}", e))?
+        .is_some()
+    {
+        model
+            .update(db)
+            .await
+            .map_err(|e| format!("数据库故障，详细信息\n{:#?}", e))?;
+    } else {
+        model
+            .insert(db)
+            .await
+            .map_err(|e| format!("数据库故障，详细信息\n{:#?}", e))?;
+    }
     Ok(())
 }
 

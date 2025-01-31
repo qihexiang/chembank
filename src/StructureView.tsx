@@ -9,10 +9,12 @@ import {
     updateStructure,
     setImage,
     setProperty,
+    setComponent,
+    deleteComponent,
 } from "./bindings";
 import { Box, Button, Grid2, Slider, TextField, Typography } from "@mui/material";
 import rdkitModule from "./rdkit";
-import { message, open } from "@tauri-apps/api/dialog"
+import { message, open, confirm } from "@tauri-apps/api/dialog"
 import mime from "mime";
 import { readBinaryFile } from "@tauri-apps/api/fs";
 import { basename } from "@tauri-apps/api/path";
@@ -49,7 +51,8 @@ async function updateToDB(state: ViewState) {
 export default function StructureView() {
     const navigate = useNavigate();
     const [searchParams] = useSearchParams();
-    const current_id = searchParams.get("id");
+    const currentId = searchParams.get("id");
+    const componentOf = searchParams.get("component_of");
     const [state, setState] = useState<ViewState>({
         structure: {
             id: 0,
@@ -78,20 +81,21 @@ export default function StructureView() {
         image: null,
     });
 
+    const [componentCount, setComponentCount] = useState(1);
 
-    const refresh = () => getStructureDetail(Number(current_id)).then(
+    const refresh = () => getStructureDetail(Number(currentId)).then(
         ([structure, property, image, components]) => {
             setState({ structure, property: property ?? { ...state.property, structure_id: structure.id }, image, components });
         }
     );
 
     useEffect(() => {
-        if (current_id !== null) {
+        if (currentId !== null) {
             refresh()
         }
-    }, [current_id]);
+    }, [currentId]);
 
-    if (current_id === null) {
+    if (currentId === null) {
         return <Box>
             <Typography>似乎发生了一些问题</Typography>
             <Button variant="contained" color="primary" onClick={() => navigate("/")}>返回首页</Button>
@@ -102,8 +106,22 @@ export default function StructureView() {
         <Box display={"flex"} flexDirection={"column"} gap={2}>
             <Box display={"flex"} gap={2}>
                 <Typography variant="h5">详细信息</Typography>
-                <Button variant="contained" color="success" onClick={() => updateToDB(state).then(refresh)}>保存</Button>
-                <Button variant="contained" color="primary" onClick={() => navigate("/")}>返回首页</Button>
+
+                {componentOf === null ? <>
+                    <Button variant="contained" color="success" onClick={() => updateToDB(state).then(refresh)}>保存</Button>
+                    <Button variant="contained" color="primary" onClick={() => navigate("/")}>返回首页</Button>
+                </> :
+                    <>
+                        <TextField type="number" label="子结构数目" value={componentCount} onChange={(e) => setComponentCount(Number(e.target.value))}></TextField>
+                        <Button variant="contained" color="success" onClick={async () => {
+                            await updateToDB(state)
+                            await setComponent(Number(componentOf), state.structure.id, componentCount)
+                            navigate(`/structure?id=${componentOf}`)
+                        }}>添加到子结构并返回</Button>
+                        <Button variant="contained" color="warning" onClick={async () => {
+                            navigate(`/structure?id=${componentOf}`)
+                        }}>取消并返回</Button>
+                    </>}
             </Box>
             <Box display={"flex"} flexDirection={"column"} gap={2}>
                 <Grid2 container alignItems={"center"} justifyContent={"space-between"} spacing={2}>
@@ -134,22 +152,22 @@ export default function StructureView() {
                 </Grid2>
             </Box>
             <Box display={"flex"} flexDirection={"row"} gap={2}>
-                <Box width={128} height={128}>{
+                <Box width={256} height={256}>{
                     state.image !== null ? <img style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain" }} src={URL.createObjectURL(new Blob([Uint8Array.from(state.image.image)], { type: mime.getType(state.image.filename) ?? `image/png` }))}></img> : <Typography>图像未上传</Typography>
                 }</Box>
                 <Grid2 container alignItems={"center"} justifyContent={"space-between"} spacing={2}>
                     <Button variant={"contained"} onClick={async () => {
                         const filepath = await open({
                             filters: [{
-                              name: 'Image',
-                              extensions: ['png', 'jpeg', 'svg', 'bmp', 'webp', 'gif', 'apng', 'tiff', 'tif', 'heif', 'heic']
+                                name: 'Image',
+                                extensions: ['png', 'jpeg', 'svg', 'bmp', 'webp', 'gif', 'apng', 'tiff', 'tif', 'heif', 'heic']
                             }]
-                          });
-                          if (filepath !== null) {
+                        });
+                        if (filepath !== null) {
                             const fileContent = await readBinaryFile(filepath as string)
                             const filename = await basename(filepath as string);
-                            setState({...state, image: {structure_id: state.structure.id, filename, image: [...fileContent]}})
-                          }
+                            setState({ ...state, image: { structure_id: state.structure.id, filename, image: [...fileContent] } })
+                        }
                     }}>选择图片</Button>
                     {state.structure.smiles !== null ? <Button variant={"contained"} color="secondary" onClick={async () => {
                         const svg = await smilesToSVG(state.structure.smiles!);
@@ -185,6 +203,43 @@ export default function StructureView() {
                     </Grid2>
                 </Grid2>
             </Box>
+            <Box display={"flex"} flexDirection={"column"} gap={2}>
+                <Typography variant="h6">子结构</Typography>
+                <Grid2 container spacing={2}>
+                    <Box display={"flex"} justifyContent={"center"} alignItems={"stretch"} flexDirection={"row"} gap={2} flexWrap={"wrap"}>
+                        {
+                            state.components.map(([component, structure], index) => <ComponentItem key={index} component={component} structure={structure!} callback={refresh}></ComponentItem>)
+                        }
+                        <Button variant="contained" onClick={async () => {
+                            const answer = await confirm("添加子结构前，是否要保存已经填写的信息？")
+                            if (answer) {
+                                await updateToDB(state)
+                            }
+                            navigate(`/component?component_of=${state.structure.id}`)
+                        }}>添加子结构</Button>
+                    </Box>
+                </Grid2>
+            </Box>
         </Box>
     );
+}
+
+function ComponentItem(props: { component: Component, structure: Structure, callback: () => void }) {
+    const navigate = useNavigate();
+    const [component, updateComponent] = useState(props.component)
+    const { structure } = props;
+    useEffect(() => {
+        setComponent(component.structure_id, component.component_id, component.count).then(props.callback)
+    }, [component])
+    return <Box gap={1} display={"flex"} flexDirection={"column"} alignItems={"stretch"} justifyContent={"stretch"}>
+        {structure.name !== null ? <Typography>名称：{structure.name}</Typography> : null}
+        <Typography>分子式：{structure.formula}</Typography>
+        {structure.smiles !== null ? <Typography>SMILES：{structure.smiles}</Typography> : null}
+        {structure.charge !== null ? <Typography>电荷：{structure.charge}</Typography> : null}
+        <TextField fullWidth label="数量" type="number" value={component.count} onChange={async (e) => {
+            updateComponent({ ...component, count: Number(e.target.value) })
+        }}></TextField>
+        <Button variant="contained" color="error" onClick={() => deleteComponent(component.structure_id, component.component_id).then(props.callback)}>删除</Button>
+        <Button variant="contained" color="info" onClick={() => navigate(`/structure?id=${structure.id}`)}>查看</Button>
+    </Box>
 }
