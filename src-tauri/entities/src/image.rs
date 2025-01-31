@@ -8,6 +8,9 @@ use specta::Type;
 pub struct Model {
     #[sea_orm(primary_key)]
     structure_id: u32,
+    #[sea_orm(not_null)]
+    extension: String,
+    #[sea_orm(not_null)]
     image: Vec<u8>
 }
 

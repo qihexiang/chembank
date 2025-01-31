@@ -10,7 +10,7 @@ impl Linked for ComponentOf {
 
     fn link(&self) -> Vec<sea_orm::LinkDef> {
         vec![
-            structure::Relation::ComponentOf.def()
+            component::Relation::Component.def().rev()
         ]
     }
 }
@@ -23,7 +23,7 @@ impl Linked for Components {
 
     fn link(&self) -> Vec<sea_orm::LinkDef> {
         vec![
-            structure::Relation::Components.def()
+            component::Relation::Structure.def().rev()
         ]
     }
 }

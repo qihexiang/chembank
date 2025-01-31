@@ -16,13 +16,16 @@ struct AppState {
 
 #[tokio::main]
 async fn main() {
-    let db = Database::connect("sqlite:chembank.db?mode=rwc").await.unwrap();
+    let db = Database::connect("sqlite:chembank.db?mode=rwc")
+        .await
+        .unwrap();
     let _ = init_db(&db).await;
     tauri::Builder::default()
         .manage(AppState {
             db: Mutex::new(Some(db)),
         })
         .invoke_handler(tauri::generate_handler![
+            structure_count,
             reset_database,
             create_structure,
             update_structure,
@@ -30,7 +33,7 @@ async fn main() {
             set_component,
             delete_component,
             set_image,
-            set_properties,
+            set_property,
             search_structure,
             get_structure_detail,
         ])
@@ -45,6 +48,9 @@ async fn reset_database(state: State<'_, AppState>) -> Result<(), String> {
     if let Some(db) = db.take() {
         db.close().await.map_err(|e| format!("无法关闭当前数据库，请确认磁盘空间充足，或强制重启程序，但可能导致最近的部分操作丢失, 详细信息：{:#?}", e))?;
     };
+    tokio::fs::remove_file("chembank.db")
+        .await
+        .map_err(|e| format!("无法删除旧的数据库，原因如下：\n{:#?}", e))?;
     let new_db = Database::connect("sqlite:chembank.db?mode=rwc")
         .await
         .map_err(|e| {
@@ -56,6 +62,20 @@ async fn reset_database(state: State<'_, AppState>) -> Result<(), String> {
     init_db(&new_db).await?;
     *db = Some(new_db);
     Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn structure_count(state: State<'_, AppState>) -> Result<u32, String> {
+    let db = state.db.lock().await;
+    let db = db
+        .as_ref()
+        .ok_or("无法连接到数据库，请重启程序，如果该问题仍然发生，请联系管理员".to_string())?;
+    structure::Entity::find()
+        .count(db)
+        .await
+        .map(|value| value as u32)
+        .map_err(|e| format!("数据库故障，原因：{:#?}", e))
 }
 
 #[tauri::command]
@@ -218,6 +238,7 @@ async fn set_image(
     state: State<'_, AppState>,
     structure_id: u32,
     image: Vec<u8>,
+    extension: String,
 ) -> Result<(), String> {
     let db = state.db.lock().await;
     let db = db.as_ref().ok_or(format!(
@@ -226,26 +247,54 @@ async fn set_image(
     let model = image::ActiveModel {
         structure_id: ActiveValue::set(structure_id),
         image: ActiveValue::set(image),
+        extension: ActiveValue::set(extension),
     };
-    model
-        .save(db)
+    if image::Entity::find_by_id(structure_id)
+        .one(db)
         .await
-        .map_err(|e| format!("数据库故障，详细信息\n{:#?}", e))?;
+        .map_err(|e| format!("数据库故障，详细信息\n{:#?}", e))?
+        .is_some()
+    {
+        model
+            .update(db)
+            .await
+            .map_err(|e| format!("数据库故障，详细信息\n{:#?}", e))?;
+    } else {
+        model
+            .insert(db)
+            .await
+            .map_err(|e| format!("数据库故障，详细信息\n{:#?}", e))?;
+    };
+
     Ok(())
 }
 
 #[tauri::command]
 #[specta::specta]
-async fn set_properties(state: State<'_, AppState>, model: property::Model) -> Result<(), String> {
+async fn set_property(state: State<'_, AppState>, model: property::Model) -> Result<(), String> {
     let db = state.db.lock().await;
     let db = db.as_ref().ok_or(format!(
         "无法连接到数据库，请重启程序，如果该问题仍然发生，请联系管理员"
     ))?;
+    let structure_id = model.structure_id;
     let model: property::ActiveModel = model.into();
-    model
-        .save(db)
+    let model = model.reset_all();
+    if property::Entity::find_by_id(structure_id)
+        .one(db)
         .await
-        .map_err(|e| format!("数据库故障，详细信息\n{:#?}", e))?;
+        .map_err(|e| format!("数据库故障，详细信息\n{:#?}", e))?
+        .is_some()
+    {
+        model
+            .update(db)
+            .await
+            .map_err(|e| format!("数据库故障，详细信息\n{:#?}", e))?;
+    } else {
+        model
+            .insert(db)
+            .await
+            .map_err(|e| format!("数据库故障，详细信息\n{:#?}", e))?;
+    }
     Ok(())
 }
 
@@ -282,12 +331,13 @@ async fn get_structure_detail(
         .one(db)
         .await
         .map_err(|e| format!("查询错误，详细信息\n{:#?}", e))?;
-    let components = model
-        .find_linked(links::Components)
+    let components = component::Entity::find()
+        .filter(component::Column::StructureId.eq(model.id))
         .find_also_linked(links::ComponentStructure)
         .all(db)
         .await
-        .map_err(|e| format!("查询错误，详细信息\n{:#?}", e))?;
+        .map_err(|e| format!("查询错误，详细信息\n{:#?}", e))
+        .unwrap();
     Ok((model, property_model, image_model, components))
 }
 
@@ -297,7 +347,7 @@ async fn search_structure(
     state: State<'_, AppState>,
     page_size: u32,
     page_number: u32,
-    keyword: String,
+    keyword: Option<String>,
     max_charge: i8,
     min_charge: i8,
 ) -> Result<Vec<structure::Model>, String> {
@@ -305,13 +355,17 @@ async fn search_structure(
     let db = db.as_ref().ok_or(format!(
         "无法连接到数据库，请重启程序，如果该问题仍然发生，请联系管理员"
     ))?;
-    let models = structure::Entity::find()
-        .filter(
+    let mut models = structure::Entity::find();
+    if let Some(keyword) = keyword {
+        let keyword = format!("%{}%", keyword);
+        models = models.filter(
             Condition::any()
                 .add(structure::Column::Formula.like(&keyword))
                 .add(structure::Column::Smiles.like(&keyword))
                 .add(structure::Column::Name.like(&keyword)),
         )
+    }
+    let models = models
         .filter(structure::Column::Charge.gte(min_charge))
         .filter(structure::Column::Charge.lte(max_charge))
         .cursor_by(structure::Column::Id)
@@ -330,6 +384,7 @@ fn export_bindings() {
 
     ts::export(
         collect_types![
+            structure_count,
             reset_database,
             create_structure,
             update_structure,
@@ -337,7 +392,7 @@ fn export_bindings() {
             set_component,
             delete_component,
             set_image,
-            set_properties,
+            set_property,
             search_structure,
             get_structure_detail,
         ],
@@ -354,14 +409,51 @@ async fn init_db(db: &DatabaseConnection) -> Result<(), String> {
     let image_stmt = Schema::new(builder).create_table_from_entity(image::Entity);
     for stmt in vec![structure_stmt, component_stmt, property_stmt, image_stmt] {
         let stmt = builder.build(&stmt);
-        db.execute(stmt).await.map_err(|e| format!("未能完成初始化，详细信息：\n{:#?}", e))?;
-    };
+        db.execute(stmt)
+            .await
+            .map_err(|e| format!("未能完成初始化，详细信息：\n{:#?}", e))?;
+    }
     Ok(())
 }
 
 #[tokio::test]
 async fn test_create_db() {
-    let db = Database::connect("sqlite://./chembank.db?mode=rwc").await.unwrap();
+    let db = Database::connect("sqlite://./chembank.db?mode=rwc")
+        .await
+        .unwrap();
     init_db(&db).await.unwrap();
     db.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn test_insert_structure() {
+    let db = Database::connect("sqlite:chembank.db?mode=rw")
+        .await
+        .unwrap();
+    let model = structure::Entity::find_by_id(2u32)
+        .one(&db)
+        .await
+        .map_err(|e| format!("查询错误，详细信息\n{:#?}", e))
+        .unwrap()
+        .ok_or("没有找到对应记录")
+        .unwrap();
+    let property_model = model
+        .find_related(property::Entity)
+        .one(&db)
+        .await
+        .map_err(|e| format!("查询错误，详细信息\n{:#?}", e))
+        .unwrap();
+    let image_model = model
+        .find_related(image::Entity)
+        .one(&db)
+        .await
+        .map_err(|e| format!("查询错误，详细信息\n{:#?}", e))
+        .unwrap();
+    let components = component::Entity::find()
+        .filter(component::Column::StructureId.eq(model.id))
+        .find_also_linked(links::ComponentStructure)
+        .all(&db)
+        .await
+        .map_err(|e| format!("查询错误，详细信息\n{:#?}", e))
+        .unwrap();
 }

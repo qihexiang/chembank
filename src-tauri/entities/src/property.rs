@@ -7,7 +7,7 @@ use specta::Type;
 #[serde(rename = "Property")]
 pub struct Model {
     #[sea_orm(primary_key)]
-    structure_id: u32,
+    pub structure_id: u32,
     decomp_temp: Option<f64>,
     density: Option<f64>,
     diss_temp: Option<f64>,

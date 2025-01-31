@@ -23,10 +23,6 @@ pub enum Relation {
     Image,
     #[sea_orm(has_one = "super::property::Entity")]
     Property,
-    #[sea_orm(belongs_to = "super::component::Entity", from = "Column::Id", to = "super::component::Column::StructureId")]
-    Components,
-    #[sea_orm(belongs_to = "super::component::Entity", from = "Column::Id", to = "super::component::Column::ComponentId")]
-    ComponentOf
 }
 
 impl Related<super::image::Entity> for Entity {
