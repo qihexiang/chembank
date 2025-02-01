@@ -7,11 +7,11 @@ use specta::Type;
 #[serde(rename = "Image")]
 pub struct Model {
     #[sea_orm(primary_key)]
-    structure_id: u32,
+    pub structure_id: u32,
     #[sea_orm(not_null)]
-    filename: String,
+    pub filename: String,
     #[sea_orm(not_null)]
-    image: Vec<u8>
+    pub image: Vec<u8>
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

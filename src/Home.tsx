@@ -1,8 +1,9 @@
 import { Box, Button, ButtonGroup, Grid2, Slider, TextField, Typography } from "@mui/material";
 import { useState } from "react";
 import { useNavigate, useSearchParams } from "react-router";
-import { createStructure, removeStructure, resetDatabase, searchStructure, structureCount } from "./bindings";
+import { createStructure, importFromFolder, removeStructure, resetDatabase, searchStructure, structureCount } from "./bindings";
 import useFetch from "./useFetch";
+import { confirm, message, open, save } from "@tauri-apps/api/dialog";
 
 
 
@@ -19,8 +20,37 @@ export default function Home() {
             <Grid2 spacing={1} container alignItems={"center"} justifyContent={"start"} size={12}>
                 <Typography variant="h4">ChemBank</Typography>
                 <Button variant="contained" color="success" onClick={() => createStructure(null, "", null, 0).then(id => navigate(`/structure?id=${id}`))}>新建结构</Button>
-                <Button variant="contained" color="primary">导入数据</Button>
-                <Button variant="contained" color="secondary">导出数据</Button>
+                <Button variant="contained" color="primary" onClick={async () => {
+                    const folder = await open({
+                        directory: true,
+                        filters: [
+                            { name: "文件夹", extensions: [] }
+                        ]
+                    })
+                    if (folder !== null) {
+                        const resetDB = await confirm("导入数据前，是否需要清空数据库？点击确定清空数据库，点击取消在保留现有数据的情况下导入。")
+                        if (resetDB) {
+                            await resetDatabase()
+                        }
+                        importFromFolder(folder as string)
+                            .then(() => message("导入成功"))
+                            .then(refreshList)
+                            .catch((e) => message(`导入失败，原因为：${e}`))
+                    }
+                }}>导入数据</Button>
+                <Button variant="contained" color="secondary" onClick={async () => {
+                    const folder = await save({
+                        filters: [
+                            {
+                                name: "文件夹",
+                                extensions: []
+                            }
+                        ]
+                    });
+                    if (folder !== null) {
+                        navigate(`/export?folder=${folder}`)
+                    }
+                }}>导出数据</Button>
                 <Button variant="contained" color="error" onClick={async () => {
                     await resetDatabase();
                     refreshList()
@@ -65,12 +95,12 @@ export default function Home() {
                     <Grid2 size={3}>{structure.smiles}</Grid2>
                     <Grid2 size={1}>{structure.charge}</Grid2>
                     <Grid2 size={2}>
-                    <ButtonGroup variant="contained">
-                        <Button onClick={() => navigate(`/structure?id=${structure.id}`)}>详情</Button>
-                        <Button color="error" onClick={() => {
-                            removeStructure(structure.id).then(refreshList)
-                        }}>删除</Button>
-                    </ButtonGroup>
+                        <ButtonGroup variant="contained">
+                            <Button onClick={() => navigate(`/structure?id=${structure.id}`)}>详情</Button>
+                            <Button color="error" onClick={() => {
+                                removeStructure(structure.id).then(refreshList)
+                            }}>删除</Button>
+                        </ButtonGroup>
                     </Grid2>
                 </Grid2>)
             }
@@ -78,7 +108,7 @@ export default function Home() {
         <Grid2>
             <ButtonGroup variant="contained">
                 {
-                    new Array(Math.floor(count / 100) + 1).fill(0).map((_, k) => k).map(key => <Button color={key===page ? "info" : "primary"} key={key} onClick={() => {
+                    new Array(Math.floor(count / 100) + 1).fill(0).map((_, k) => k).map(key => <Button color={key === page ? "info" : "primary"} key={key} onClick={() => {
                         navigate(`/?page=${key}`)
                     }}>
                         {key + 1}
@@ -86,5 +116,5 @@ export default function Home() {
                 }
             </ButtonGroup>
         </Grid2>
-    </Grid2>
+    </Grid2 >
 }

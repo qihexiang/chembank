@@ -1,10 +1,17 @@
 // Prevents additional console window on Windows in release, DO NOT REMOVE!!
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+use std::{
+    fs::{self, File},
+    io::{Read, Write},
+    path::PathBuf,
+};
+
 use sea_orm::{
     ActiveModelTrait, ActiveValue, ColumnTrait, Condition, ConnectionTrait, Database,
-    DatabaseConnection, EntityTrait, ModelTrait, PaginatorTrait, QueryFilter, Schema,
+    DatabaseConnection, EntityTrait, ModelTrait, PaginatorTrait, QueryFilter, QueryOrder, Schema,
 };
+use skip_bom::{BomType, SkipEncodingBom};
 use tauri::State;
 use tokio::sync::Mutex;
 
@@ -36,6 +43,8 @@ async fn main() {
             set_property,
             search_structure,
             get_structure_detail,
+            export_to_folder,
+            import_from_folder,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -389,6 +398,174 @@ async fn search_structure(
     Ok(models)
 }
 
+fn write_bom<T: std::io::Write>(w: &mut T) -> std::io::Result<()> {
+    w.write_all(&[0xEF, 0xBB, 0xBF])
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn import_from_folder(
+    state: State<'_, AppState>,
+    folder_path: PathBuf,
+) -> Result<(), String> {
+    let db = state.db.lock().await;
+    let db = db.as_ref().ok_or(format!(
+        "无法连接到数据库，请重启程序，如果该问题仍然发生，请联系管理员"
+    ))?;
+    let structure_csv = folder_path.join("structures.csv");
+    let structure_csv = File::open(structure_csv).map_err(|e| format!("无法打开表格，{:#?}", e))?;
+    let structure_csv = SkipEncodingBom::new(&[BomType::UTF8], structure_csv);
+    let mut structure_csv = csv::Reader::from_reader(structure_csv);
+    for model in structure_csv.deserialize() {
+        let model: structure::Model =
+            model.map_err(|e| format!("structure表格式不正确：\n{:#?}", e))?;
+        let model: structure::ActiveModel = model.into();
+        let model = model.reset_all();
+        model
+            .insert(db)
+            .await
+            .map_err(|e| format!("写入失败，原因：\n{:#?}", e))?;
+    }
+    let property_csv = folder_path.join("properties.csv");
+    let property_csv = File::open(property_csv).map_err(|e| format!("无法打开表格，{:#?}", e))?;
+    let property_csv = SkipEncodingBom::new(&[BomType::UTF8], property_csv);
+    let mut property_csv = csv::Reader::from_reader(property_csv);
+    for model in property_csv.deserialize() {
+        let model: property::Model =
+            model.map_err(|e| format!("property表格式不正确：\n{:#?}", e))?;
+        let model: property::ActiveModel = model.into();
+        let model = model.reset_all();
+        model
+            .insert(db)
+            .await
+            .map_err(|e| format!("写入失败，原因：\n{:#?}", e))?;
+    }
+    let component_csv = folder_path.join("components.csv");
+    let component_csv = File::open(component_csv).map_err(|e| format!("无法打开表格，{:#?}", e))?;
+    let component_csv = SkipEncodingBom::new(&[BomType::UTF8], component_csv);
+    let mut component_csv = csv::Reader::from_reader(component_csv);
+    for model in component_csv.deserialize() {
+        let model: component::Model =
+            model.map_err(|e| format!("component表格式不正确：\n{:#?}", e))?;
+        let model: component::ActiveModel = model.into();
+        let model = model.reset_all();
+        model
+            .insert(db)
+            .await
+            .map_err(|e| format!("写入失败，原因：\n{:#?}", e))?;
+    }
+    let image_folder = folder_path.join("images");
+    let image_folders =
+        fs::read_dir(&image_folder).map_err(|e| format!("无法读取图片目录\n{:#?}", e))?;
+    for item in image_folders {
+        let item = item.map_err(|e| format!("无法读取的路径\n{:#?}", e))?;
+        let structure_id: u32 = item
+            .file_name()
+            .into_string()
+            .map_err(|e| format!("无法识别的路径\n{:?}", e))?
+            .parse()
+            .map_err(|e| format!("无法将名称解析为结构ID：{:#?}", e))?;
+        let filename = fs::read_dir(image_folder.join(structure_id.to_string()))
+            .map_err(|e| format!("无法读取图片文件夹\n{:#?}", e))?
+            .next()
+            .ok_or("发现了空的图片文件夹")?
+            .map_err(|e| format!("无法读取的路径\n{:#?}", e))?
+            .file_name()
+            .into_string()
+            .map_err(|e| format!("无法识别的路径\n{:?}", e))?;
+        let full_image_path = image_folder.join(structure_id.to_string()).join(&filename);
+        let mut image_content = vec![];
+        File::open(full_image_path)
+            .map_err(|e| format!("无法打开文件\n{:#?}", e))?
+            .read_to_end(&mut image_content)
+            .map_err(|e| format!("无法读取文件\n{:#?}", e))?;
+        let model = image::ActiveModel {
+            structure_id: ActiveValue::set(structure_id),
+            filename: ActiveValue::set(filename),
+            image: ActiveValue::set(image_content),
+        };
+        model
+            .insert(db)
+            .await
+            .map_err(|e| format!("未能添加记录，原因：\n{:#?}", e))?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn export_to_folder(state: State<'_, AppState>, folder_path: PathBuf) -> Result<(), String> {
+    let db = state.db.lock().await;
+    let db = db.as_ref().ok_or(format!(
+        "无法连接到数据库，请重启程序，如果该问题仍然发生，请联系管理员"
+    ))?;
+    let _ = fs::create_dir(&folder_path);
+    let structures_csv = folder_path.join("structures.csv");
+    let mut structures_csv =
+        File::create(structures_csv).map_err(|e| format!("无法创建表格：\n{:#?}", e))?;
+    write_bom(&mut structures_csv).map_err(|e| format!("无法写入文件：\n{:#?}", e))?;
+    let mut structure_csv = csv::Writer::from_writer(structures_csv);
+    let structures = structure::Entity::find()
+        .all(db)
+        .await
+        .map_err(|e| format!("查询错误，详细信息\n{:#?}", e))?;
+    for structure in structures {
+        structure_csv
+            .serialize(structure)
+            .map_err(|e| format!("写入错误，原因为：{:#?}", e))?;
+    }
+    let properties_csv = folder_path.join("properties.csv");
+    let mut properties_csv =
+        File::create(properties_csv).map_err(|e| format!("无法创建表格：\n{:#?}", e))?;
+    write_bom(&mut properties_csv).map_err(|e| format!("无法写入文件：\n{:#?}", e))?;
+    let mut property_csv = csv::Writer::from_writer(properties_csv);
+    let properties = property::Entity::find()
+        .all(db)
+        .await
+        .map_err(|e| format!("查询错误，详细信息\n{:#?}", e))?;
+    for property in properties {
+        property_csv
+            .serialize(property)
+            .map_err(|e| format!("写入错误，原因为：{:#?}", e))?;
+    }
+    let components_csv = folder_path.join("components.csv");
+    let mut components_csv =
+        File::create(components_csv).map_err(|e| format!("无法创建表格：\n{:#?}", e))?;
+    write_bom(&mut components_csv).map_err(|e| format!("无法写入文件：\n{:#?}", e))?;
+    let mut component_csv = csv::Writer::from_writer(components_csv);
+    let components = component::Entity::find()
+        .all(db)
+        .await
+        .map_err(|e| format!("查询错误，详细信息\n{:#?}", e))?;
+    for component in components {
+        component_csv
+            .serialize(component)
+            .map_err(|e| format!("写入错误，原因为：\n{:#?}", e))?;
+    }
+    let image_folder = folder_path.join("images");
+    let _ = fs::create_dir(&image_folder);
+    let mut image_pages = image::Entity::find()
+        .order_by_asc(image::Column::StructureId)
+        .paginate(db, 10);
+    while let Some(images) = image_pages
+        .fetch_and_next()
+        .await
+        .map_err(|e| format!("查询错误，详细信息\n{:#?}", e))?
+    {
+        for image in images {
+            let image_folder = image_folder.join(image.structure_id.to_string());
+            let _ = fs::create_dir(&image_folder);
+            let write_path = image_folder.join(image.filename);
+            let mut write_file =
+                File::create(write_path).map_err(|e| format!("无法创建图片：\n{:#?}", e))?;
+            write_file
+                .write_all(&image.image)
+                .map_err(|e| format!("无法写入图片：\n{:#?}", e))?;
+        }
+    }
+    Ok(())
+}
+
 #[test]
 fn export_bindings() {
     use specta::collect_types;
@@ -407,6 +584,8 @@ fn export_bindings() {
             set_property,
             search_structure,
             get_structure_detail,
+            export_to_folder,
+            import_from_folder,
         ],
         "../src/bindings.ts",
     )
@@ -435,4 +614,22 @@ async fn test_create_db() {
         .unwrap();
     init_db(&db).await.unwrap();
     db.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn write_to_csv() {
+    use std::fs::{create_dir, File};
+    use std::path::Path;
+
+    let db = Database::connect("sqlite:chembank.db").await.unwrap();
+    let base_path = Path::new("./export");
+    let _ = create_dir(base_path);
+    let structures_path = base_path.join("structures.csv");
+    let mut csv_file = File::create(structures_path).unwrap();
+    csv_file.write_all(&[0xEF, 0xBB, 0xBF]).unwrap();
+    let structures = structure::Entity::find().all(&db).await.unwrap();
+    let mut writer = csv::Writer::from_writer(csv_file);
+    for record in structures {
+        writer.serialize(record).unwrap();
+    }
 }

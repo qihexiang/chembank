@@ -1,11 +1,12 @@
+import { Box, Button, ButtonGroup, Container } from "@mui/material";
 import React from "react";
 import ReactDOM from "react-dom/client";
 import { BrowserRouter, Route, Routes, useNavigate } from "react-router";
-import Home from "./Home";
-import StructureView from "./StructureView";
-import { Box, Button, ButtonGroup, Container } from "@mui/material";
 import ComponentView from "./ComponentView";
-import "./main.css"
+import ExportView from "./Export";
+import Home from "./Home";
+import "./main.css";
+import StructureView from "./StructureView";
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
@@ -17,6 +18,7 @@ ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
           <Route index element={<Home />}></Route>
           <Route path="/structure" element={<StructureView />}></Route>
           <Route path="/component" element={<ComponentView />}></Route>
+          <Route path="/export" element={<ExportView />}></Route>
         </Routes>
       </Container>
     </BrowserRouter>

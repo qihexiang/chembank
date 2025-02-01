@@ -24,6 +24,8 @@ tokio = { version = "1.43.0", features = ["full"] }
 tauri-specta = { version = "1.0.2", features = ["javascript", "typescript"] }
 entities = { path = "./entities" }
 sea-schema = "0.16.1"
+csv = "1.3.1"
+skip_bom = "0.5.1"
 
 [features]
 # This feature is used for production builds or when a dev server is not specified, DO NOT REMOVE!!
