@@ -13,7 +13,9 @@ jobs:
 
     steps:
     - name: Checkout repository
-      uses: actions/checkout@v3
+      uses: actions/checkout@v4
+      with:
+        ref: ${{ github.ref_name }}
 
     - name: Create Release
       id: create_release
@@ -49,12 +51,12 @@ jobs:
         path: |
           ~/.pnpm-store
           node_modules
-        key: pnpm-${{ hashFiles('pnpm-lock.yaml') }}
+        key: pnpm
 
     - name: Install dependencies
       run: pnpm install
 
-    - name: Cache for PNPM
+    - name: Cache for Cargo and rustc
       uses: actions/cache@v3
       id: cargo-cache
       with:
@@ -62,7 +64,7 @@ jobs:
           ~/.cargo/registry
           ~/.cargo/git
           src-tauri/target
-        key: pnpm-${{ hashFiles('src-tauri/Cargo.lock') }}
+        key: cargo
 
     - name: Build Tauri project
       run: pnpm tauri build
