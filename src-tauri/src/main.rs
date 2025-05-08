@@ -168,14 +168,6 @@ async fn remove_structure(state: State<'_, AppState>, id: u32) -> Result<(), Str
             "该结构仍被作为其他结构的组成部分存在，请检查删除相应结构后再删除此结构"
         ))?;
     };
-    structure::Entity::find_by_id(id)
-        .one(db)
-        .await
-        .map_err(|e| format!("数据库故障，详细信息\n{:#?}", e))?
-        .ok_or("未找到对应结构，可能已经删除或未添加".to_string())?
-        .delete(db)
-        .await
-        .map_err(|e| format!("数据库故障，详细信息\n{:#?}", e))?;
     component::Entity::delete_many()
         .filter(component::Column::StructureId.eq(id))
         .exec(db)
@@ -189,6 +181,14 @@ async fn remove_structure(state: State<'_, AppState>, id: u32) -> Result<(), Str
     property::Entity::delete_many()
         .filter(property::Column::StructureId.eq(id))
         .exec(db)
+        .await
+        .map_err(|e| format!("数据库故障，详细信息\n{:#?}", e))?;
+    structure::Entity::find_by_id(id)
+        .one(db)
+        .await
+        .map_err(|e| format!("数据库故障，详细信息\n{:#?}", e))?
+        .ok_or("未找到对应结构，可能已经删除或未添加".to_string())?
+        .delete(db)
         .await
         .map_err(|e| format!("数据库故障，详细信息\n{:#?}", e))?;
     Ok(())

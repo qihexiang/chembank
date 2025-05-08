@@ -102,7 +102,7 @@ export default function Home() {
                         <ButtonGroup variant="contained">
                             <Button onClick={() => navigate(`/structure?id=${structure.id}`)}>详情</Button>
                             <Button color="error" onClick={() => {
-                                removeStructure(structure.id).then(refreshList)
+                                removeStructure(structure.id).then(refreshList).catch((e) => message(`删除失败，原因为：${e}`))
                             }}>删除</Button>
                         </ButtonGroup>
                     </Grid2>
