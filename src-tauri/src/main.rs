@@ -330,6 +330,7 @@ async fn get_structure_detail(
         Option<property::Model>,
         Option<image::Model>,
         Vec<(component::Model, Option<structure::Model>)>,
+        Vec<(component::Model, Option<structure::Model>)>,
     ),
     String,
 > {
@@ -359,7 +360,13 @@ async fn get_structure_detail(
         .await
         .map_err(|e| format!("查询错误，详细信息\n{:#?}", e))
         .unwrap();
-    Ok((model, property_model, image_model, components))
+    let relateds = component::Entity::find()
+        .filter(component::Column::ComponentId.eq(model.id))
+        .find_also_linked(links::StructureComponent)
+        .all(db)
+        .await
+        .map_err(|e| format!("查询错误，详细信息\n{:#?}", e))?;
+    Ok((model, property_model, image_model, components, relateds))
 }
 
 #[tauri::command]
@@ -371,7 +378,7 @@ async fn search_structure(
     keyword: Option<String>,
     max_charge: i8,
     min_charge: i8,
-) -> Result<Vec<structure::Model>, String> {
+) -> Result<(Vec<structure::Model>, u32), String> {
     let db = state.db.lock().await;
     let db = db.as_ref().ok_or(format!(
         "无法连接到数据库，请重启程序，如果该问题仍然发生，请联系管理员"
@@ -389,13 +396,21 @@ async fn search_structure(
     let models = models
         .filter(structure::Column::Charge.gte(min_charge))
         .filter(structure::Column::Charge.lte(max_charge))
-        .cursor_by(structure::Column::Id)
-        .after(page_size * page_number)
-        .before(page_size * (page_number + 1))
-        .all(db)
-        .await
-        .map_err(|e| format!("查询错误，详细信息\n{:#?}", e))?;
-    Ok(models)
+        .order_by_asc(structure::Column::Id)
+        .paginate(db, page_size as u64);
+    let pages = models.num_pages().await.map_err(|e| {
+        format!(
+            "查询错误，可能是由于数据库损坏或权限问题，详细信息\n{:#?}",
+            e
+        )
+    })?;
+    let models = models.fetch_page(page_number as u64).await.map_err(|e| {
+        format!(
+            "查询错误，可能是由于数据库损坏或权限问题，详细信息\n{:#?}",
+            e
+        )
+    })?;
+    Ok((models, pages as u32))
 }
 
 fn write_bom<T: std::io::Write>(w: &mut T) -> std::io::Result<()> {
@@ -573,7 +588,6 @@ fn export_bindings() {
 
     ts::export(
         collect_types![
-            structure_count,
             reset_database,
             create_structure,
             update_structure,

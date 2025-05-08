@@ -1,4 +1,4 @@
-use sea_orm::{Linked, RelationTrait};
+ use sea_orm::{Linked, RelationTrait};
 
 use crate::{component, structure};
 
@@ -39,4 +39,18 @@ impl Linked for ComponentStructure {
             component::Relation::Component.def()
         ]
     }
+}
+
+pub struct StructureComponent;
+
+impl Linked for StructureComponent {
+    type FromEntity = component::Entity;
+    type ToEntity = structure::Entity;
+    
+    fn link(&self) -> Vec<sea_orm::LinkDef> {
+        vec![
+            component::Relation::Structure.def()
+        ]
+    }
+    
 }

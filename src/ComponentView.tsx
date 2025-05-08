@@ -1,7 +1,7 @@
 import { Box, Button, ButtonGroup, Checkbox, FormControlLabel, Grid2, Slider, TextField, Typography } from "@mui/material";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router";
-import { createStructure, searchStructure, setComponent, structureCount } from "./bindings";
+import { createStructure, searchStructure, setComponent } from "./bindings";
 import useFetch from "./useFetch";
 
 
@@ -14,9 +14,13 @@ export default function ComponentView() {
     const [componentCount, setComponentCount] = useState(1);
     const [keyword, setKeyword] = useState<string | null>(null)
     const [[minCharge, maxCharge], setChargeRange] = useState<[number, number]>([-10, 10])
-    const [structures] = useFetch(() => searchStructure(100, page, keyword, maxCharge, minCharge), [], [page, keyword, minCharge, maxCharge]);
-    const [count] = useFetch(() => structureCount(), 0, [structures])
+    const [[structures, count]] = useFetch(() => searchStructure(100, page, keyword, maxCharge, minCharge), [[], 0], [page, keyword, minCharge, maxCharge]);
     const [selected, setSelected] = useState<number | null>(null);
+    useEffect(() => {
+        if (page > count) {
+            navigate(`/?page=${count - 1}`)
+        }
+    }, [page, count])
     return <Grid2 display={"flex"} flexDirection={"column"} gap={1}>
         <Grid2 container spacing={2}>
             <Grid2 spacing={1} container alignItems={"center"} justifyContent={"start"} size={12}>
@@ -87,7 +91,7 @@ export default function ComponentView() {
         <Grid2>
             <ButtonGroup variant="contained">
                 {
-                    new Array(Math.floor(count / 100) + 1).fill(0).map((_, k) => k).map(key => <Button color={key === page ? "info" : "primary"} key={key} onClick={() => {
+                    new Array(count).fill(0).map((_, k) => k).map(key => <Button color={key === page ? "info" : "primary"} key={key} onClick={() => {
                         navigate(`/?page=${key}&component_of=${componentOf}`)
                     }}>
                         {key + 1}

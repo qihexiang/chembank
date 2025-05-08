@@ -22,6 +22,7 @@ import { basename } from "@tauri-apps/api/path";
 type ViewState = {
     structure: Structure;
     components: [Component, Structure | null][];
+    relateds: [Component, Structure | null][];
     property: Property;
     image: Image | null;
 };
@@ -48,6 +49,22 @@ async function updateToDB(state: ViewState) {
     await setProperty({ ...property, structure_id: structure.id })
 }
 
+const emptyProperty = {
+    structure_id: 0,
+    decomp_temp: null,
+    density: null,
+    diss_temp: null,
+    formation_enthalpy: null,
+    impact_sensitive: null,
+    friction_sensitivity: null,
+    det_velocity: null,
+    det_pressure: null,
+    n_content: null,
+    o_content: null,
+    no_content: null,
+    references: "",
+    remarks: ""
+};
 export default function StructureView() {
     const navigate = useNavigate();
     const [searchParams] = useSearchParams();
@@ -62,30 +79,16 @@ export default function StructureView() {
             charge: 0,
         },
         components: [],
-        property: {
-            structure_id: 0,
-            decomp_temp: null,
-            density: null,
-            diss_temp: null,
-            formation_enthalpy: null,
-            impact_sensitive: null,
-            friction_sensitivity: null,
-            det_velocity: null,
-            det_pressure: null,
-            n_content: null,
-            o_content: null,
-            no_content: null,
-            references: "",
-            remarks: ""
-        },
+        relateds: [],
+        property: emptyProperty,
         image: null,
     });
 
     const [componentCount, setComponentCount] = useState(1);
 
     const refresh = () => getStructureDetail(Number(currentId)).then(
-        ([structure, property, image, components]) => {
-            setState({ structure, property: property ?? { ...state.property, structure_id: structure.id }, image, components });
+        ([structure, property, image, components, relateds]) => {
+            setState({ structure, property: property ?? { ...emptyProperty, structure_id: structure.id }, image, components, relateds });
         }
     );
 
@@ -108,7 +111,7 @@ export default function StructureView() {
                 <Typography variant="h5">详细信息</Typography>
 
                 {componentOf === null ? <>
-                    <Button variant="contained" color="success" onClick={() => updateToDB(state).then(refresh)}>保存</Button>
+                    <Button variant="contained" color="success" onClick={() => updateToDB(state).then(refresh).catch(e => message(e))}>保存</Button>
                     <Button variant="contained" color="primary" onClick={() => navigate("/")}>返回首页</Button>
                 </> :
                     <>
@@ -208,7 +211,7 @@ export default function StructureView() {
                 <Grid2 container spacing={2}>
                     <Box display={"flex"} justifyContent={"center"} alignItems={"stretch"} flexDirection={"row"} gap={2} flexWrap={"wrap"}>
                         {
-                            state.components.map(([component, structure], index) => <ComponentItem key={index} component={component} structure={structure!} callback={refresh}></ComponentItem>)
+                            state.components.map(([component, structure], index) => <ComponentItem ro={false} key={index} component={component} structure={structure!} callback={refresh}></ComponentItem>)
                         }
                         <Button variant="contained" onClick={async () => {
                             const answer = await confirm("添加子结构前，是否要保存已经填写的信息？")
@@ -220,11 +223,21 @@ export default function StructureView() {
                     </Box>
                 </Grid2>
             </Box>
+            <Box display={"flex"} flexDirection={"column"} gap={2}>
+                <Typography variant="h6">相关结构</Typography>
+                <Grid2 container spacing={2}>
+                    <Box display={"flex"} justifyContent={"center"} alignItems={"stretch"} flexDirection={"row"} gap={2} flexWrap={"wrap"}>
+                        {
+                            state.relateds.map(([component, structure], index) => <ComponentItem key={index} component={component} structure={structure!} callback={refresh} ro></ComponentItem>)
+                        }
+                    </Box>
+                </Grid2>
+            </Box>
         </Box>
     );
 }
 
-function ComponentItem(props: { component: Component, structure: Structure, callback: () => void }) {
+function ComponentItem(props: { component: Component, structure: Structure, callback: () => void, ro: boolean }) {
     const navigate = useNavigate();
     const [component, updateComponent] = useState(props.component)
     const { structure } = props;
@@ -239,7 +252,7 @@ function ComponentItem(props: { component: Component, structure: Structure, call
         <TextField fullWidth label="数量" type="number" value={component.count} onChange={async (e) => {
             updateComponent({ ...component, count: Number(e.target.value) })
         }}></TextField>
-        <Button variant="contained" color="error" onClick={() => deleteComponent(component.structure_id, component.component_id).then(props.callback)}>删除</Button>
+        { props.ro ? null : <Button variant="contained" color="error" onClick={() => deleteComponent(component.structure_id, component.component_id).then(props.callback)}>删除</Button> }
         <Button variant="contained" color="info" onClick={() => navigate(`/structure?id=${structure.id}`)}>查看</Button>
     </Box>
 }

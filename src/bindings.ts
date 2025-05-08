@@ -10,10 +10,6 @@ declare global {
 // Function avoids 'window not defined' in SSR
 const invoke = () => window.__TAURI_INVOKE__;
 
-export function structureCount() {
-    return invoke()<number>("structure_count")
-}
-
 export function resetDatabase() {
     return invoke()<null>("reset_database")
 }
@@ -47,11 +43,11 @@ export function setProperty(model: Property) {
 }
 
 export function searchStructure(pageSize: number, pageNumber: number, keyword: string | null, maxCharge: number, minCharge: number) {
-    return invoke()<Structure[]>("search_structure", { pageSize,pageNumber,keyword,maxCharge,minCharge })
+    return invoke()<[Structure[], number]>("search_structure", { pageSize,pageNumber,keyword,maxCharge,minCharge })
 }
 
 export function getStructureDetail(id: number) {
-    return invoke()<[Structure, Property | null, Image | null, ([Component, Structure | null])[]]>("get_structure_detail", { id })
+    return invoke()<[Structure, Property | null, Image | null, ([Component, Structure | null])[], ([Component, Structure | null])[]]>("get_structure_detail", { id })
 }
 
 export function exportToFolder(folderPath: string) {
