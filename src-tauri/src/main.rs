@@ -10,6 +10,7 @@ use std::{
 use sea_orm::{
     ActiveModelTrait, ActiveValue, ColumnTrait, Condition, ConnectionTrait, Database,
     DatabaseConnection, EntityTrait, ModelTrait, PaginatorTrait, QueryFilter, QueryOrder, Schema,
+    TransactionTrait,
 };
 use skip_bom::{BomType, SkipEncodingBom};
 use tauri::State;
@@ -157,10 +158,15 @@ async fn remove_structure(state: State<'_, AppState>, id: u32) -> Result<(), Str
     let db = db
         .as_ref()
         .ok_or("无法连接到数据库，请重启程序，如果该问题仍然发生，请联系管理员".to_string())?;
-
+    let txn = db.begin().await.map_err(|e| {
+        format!(
+            "无法开始事务，可能是由于数据库损坏或权限问题，详细信息\n{:#?}",
+            e
+        )
+    })?;
     let component_of = component::Entity::find()
         .filter(component::Column::ComponentId.eq(id))
-        .count(db)
+        .count(&txn)
         .await
         .map_err(|e| format!("数据库故障，详细信息\n{:#?}", e))?;
     if component_of > 0 {
@@ -170,27 +176,33 @@ async fn remove_structure(state: State<'_, AppState>, id: u32) -> Result<(), Str
     };
     component::Entity::delete_many()
         .filter(component::Column::StructureId.eq(id))
-        .exec(db)
+        .exec(&txn)
         .await
         .map_err(|e| format!("数据库故障，详细信息\n{:#?}", e))?;
     image::Entity::delete_many()
         .filter(image::Column::StructureId.eq(id))
-        .exec(db)
+        .exec(&txn)
         .await
         .map_err(|e| format!("数据库故障，详细信息\n{:#?}", e))?;
     property::Entity::delete_many()
         .filter(property::Column::StructureId.eq(id))
-        .exec(db)
+        .exec(&txn)
         .await
         .map_err(|e| format!("数据库故障，详细信息\n{:#?}", e))?;
     structure::Entity::find_by_id(id)
-        .one(db)
+        .one(&txn)
         .await
         .map_err(|e| format!("数据库故障，详细信息\n{:#?}", e))?
         .ok_or("未找到对应结构，可能已经删除或未添加".to_string())?
-        .delete(db)
+        .delete(&txn)
         .await
         .map_err(|e| format!("数据库故障，详细信息\n{:#?}", e))?;
+    txn.commit().await.map_err(|e| {
+        format!(
+            "无法提交事务，可能是由于数据库损坏或权限问题，详细信息\n{:#?}",
+            e
+        )
+    })?;
     Ok(())
 }
 
