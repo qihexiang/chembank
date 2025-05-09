@@ -15,7 +15,7 @@ export default function Home() {
     const [[minCharge, maxCharge], setChargeRange] = useState<[number, number]>([-10, 10])
     const [[structures, count], refreshList] = useFetch(() => searchStructure(100, page, keyword, maxCharge, minCharge), [[], 0], [page, keyword, minCharge, maxCharge]);
     useEffect(() => {
-        if (page > count) {
+        if (page >= count) {
             navigate(`/?page=${count - 1}`)
         }
     }, [page, count])
