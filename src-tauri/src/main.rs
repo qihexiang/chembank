@@ -8,9 +8,7 @@ use std::{
 };
 
 use sea_orm::{
-    ActiveModelTrait, ActiveValue, ColumnTrait, Condition, ConnectionTrait, Database,
-    DatabaseConnection, EntityTrait, ModelTrait, PaginatorTrait, QueryFilter, QueryOrder, Schema,
-    TransactionTrait,
+    prelude::Expr, ActiveModelTrait, ActiveValue, ColumnTrait, Condition, ConnectionTrait, Database, DatabaseConnection, EntityTrait, ModelTrait, PaginatorTrait, QueryFilter, QueryOrder, Schema, TransactionTrait
 };
 use skip_bom::{BomType, SkipEncodingBom};
 use tauri::State;
@@ -395,20 +393,33 @@ async fn search_structure(
     let db = db.as_ref().ok_or(format!(
         "无法连接到数据库，请重启程序，如果该问题仍然发生，请联系管理员"
     ))?;
-    let mut models = structure::Entity::find();
+    let mut models = structure::Entity::find().left_join(property::Entity);
     if let Some(keyword) = keyword {
         let keyword = format!("%{}%", keyword);
         models = models.filter(
-            Condition::any()
-                .add(structure::Column::Formula.like(&keyword))
-                .add(structure::Column::Smiles.like(&keyword))
-                .add(structure::Column::Name.like(&keyword)),
-        )
+            Expr::col((structure::Entity, structure::Column::Name))
+            .like(&keyword)
+            .or(Expr::col((structure::Entity, structure::Column::Formula)).like(&keyword))
+            .or(Expr::col((structure::Entity, structure::Column::Smiles)).like(&keyword))
+            .or(Expr::col((property::Entity, property::Column::Remarks)).like(&keyword))
+            .or(Expr::col((property::Entity, property::Column::References)).like(&keyword))
+            .or(Expr::col((property::Entity, property::Column::DecompTemp)).like(&keyword))
+            .or(Expr::col((property::Entity, property::Column::DetPressure)).like(&keyword))
+            .or(Expr::col((property::Entity, property::Column::DetVelocity)).like(&keyword))
+            .or(Expr::col((property::Entity, property::Column::DissTemp)).like(&keyword))
+            .or(Expr::col((property::Entity, property::Column::Density)).like(&keyword))
+            .or(Expr::col((property::Entity, property::Column::FormationEnthalpy)).like(&keyword))
+            .or(Expr::col((property::Entity, property::Column::FrictionSensitivity)).like(&keyword))
+            .or(Expr::col((property::Entity, property::Column::ImpactSensitive)).like(&keyword))
+            .or(Expr::col((property::Entity, property::Column::NContent)).like(&keyword))
+            .or(Expr::col((property::Entity, property::Column::NoContent)).like(&keyword))
+            .or(Expr::col((property::Entity, property::Column::OContent)).like(&keyword))
+        );
     }
     let models = models
         .filter(structure::Column::Charge.gte(min_charge))
         .filter(structure::Column::Charge.lte(max_charge))
-        .order_by_asc(structure::Column::Id)
+        .order_by_desc(structure::Column::Id)
         .paginate(db, page_size as u64);
     let pages = models.num_pages().await.map_err(|e| {
         format!(

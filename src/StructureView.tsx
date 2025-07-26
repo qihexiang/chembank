@@ -11,6 +11,7 @@ import {
     setProperty,
     setComponent,
     deleteComponent,
+    removeStructure,
 } from "./bindings";
 import { Box, Button, Grid2, Slider, TextField, Typography } from "@mui/material";
 import rdkitModule from "./rdkit";
@@ -18,6 +19,7 @@ import { message, open, confirm } from "@tauri-apps/api/dialog"
 import mime from "mime";
 import { readBinaryFile } from "@tauri-apps/api/fs";
 import { basename } from "@tauri-apps/api/path";
+import useFetch from "./useFetch";
 
 type ViewState = {
     structure: Structure;
@@ -98,6 +100,21 @@ export default function StructureView() {
         }
     }, [currentId]);
 
+    useEffect(() => {
+        return () => {
+            getStructureDetail(Number(currentId)).then(([structure, ..._]) => {
+                if (structure.name === null && structure.smiles === null) {
+                    alert("请设置名称或SMILES")
+                    if (componentOf !== null) {
+                        navigate(`/structre?id=${currentId}&component_of=${componentOf}`)
+                    } else {
+                        navigate(`/structure?id=${currentId}`)
+                    }
+                }
+            })
+        }
+    }, [])
+
     if (currentId === null) {
         return <Box>
             <Typography>似乎发生了一些问题</Typography>
@@ -112,10 +129,11 @@ export default function StructureView() {
 
                 {componentOf === null ? <>
                     <Button variant="contained" color="success" onClick={() => updateToDB(state).then(refresh).catch(e => message(e))}>保存</Button>
-                    <Button variant="contained" color="primary" onClick={() => navigate("/")}>返回首页</Button>
+                    <Button variant="contained" color="primary" onClick={() => updateToDB(state).then(() => navigate("/"))}>保存并返回首页</Button>
+                    <Button variant="contained" color="error" onClick={() => removeStructure(Number(currentId)).then(() => navigate("/"))}>删除并返回首页</Button>
                 </> :
                     <>
-                        <TextField type="number" label="子结构数目" value={componentCount} onChange={(e) => setComponentCount(Number(e.target.value))}></TextField>
+                        <TextField label="子结构数目" value={componentCount} onChange={(e) => setComponentCount(Number(e.target.value))}></TextField>
                         <Button variant="contained" color="success" onClick={async () => {
                             await updateToDB(state)
                             await setComponent(Number(componentOf), state.structure.id, componentCount)
@@ -187,17 +205,17 @@ export default function StructureView() {
             </Box>
             <Box>
                 <Grid2 container alignItems={"center"} justifyContent={"center"} spacing={2}>
-                    <TextField type="number" label="分解温度（℃）" placeholder="热分解温度" value={state.property.decomp_temp ?? 0.} onChange={(e) => setState({ ...state, property: { ...state.property, decomp_temp: Number(e.target.value) } })}></TextField>
-                    <TextField type="number" label="热熔解温度（℃）" placeholder="热溶解温度" value={state.property.diss_temp ?? 0.} onChange={(e) => setState({ ...state, property: { ...state.property, diss_temp: Number(e.target.value) } })}></TextField>
-                    <TextField type="number" label="密度（g·cm-3）" placeholder="密度" value={state.property.density ?? 0.} onChange={(e) => setState({ ...state, property: { ...state.property, density: Number(e.target.value) } })}></TextField>
-                    <TextField type="number" label="生成焓（kJ·mol-1）" placeholder="生成焓" value={state.property.formation_enthalpy ?? 0.} onChange={(e) => setState({ ...state, property: { ...state.property, formation_enthalpy: Number(e.target.value) } })}></TextField>
-                    <TextField type="number" label="撞击感度（J）" placeholder="撞击感度" value={state.property.impact_sensitive ?? 0.} onChange={(e) => setState({ ...state, property: { ...state.property, impact_sensitive: Number(e.target.value) } })}></TextField>
-                    <TextField type="number" label="摩擦感度（N）" placeholder="摩擦感度" value={state.property.friction_sensitivity ?? 0.} onChange={(e) => setState({ ...state, property: { ...state.property, friction_sensitivity: Number(e.target.value) } })}></TextField>
-                    <TextField type="number" label="爆速（ms-1）" placeholder="爆速" value={state.property.det_velocity ?? 0.} onChange={(e) => setState({ ...state, property: { ...state.property, det_velocity: Number(e.target.value) } })}></TextField>
-                    <TextField type="number" label="爆压（GPa）" placeholder="爆压" value={state.property.det_pressure ?? 0.} onChange={(e) => setState({ ...state, property: { ...state.property, det_pressure: Number(e.target.value) } })}></TextField>
-                    <TextField type="number" label="氮含量（%）" placeholder="氮含量" value={state.property.n_content ?? 0.} onChange={(e) => setState({ ...state, property: { ...state.property, n_content: Number(e.target.value) } })}></TextField>
-                    <TextField type="number" label="氧含量（%）" placeholder="氧含量" value={state.property.o_content ?? 0.} onChange={(e) => setState({ ...state, property: { ...state.property, o_content: Number(e.target.value) } })}></TextField>
-                    <TextField type="number" label="氮氧含量（%）" placeholder="氮氧含量" value={state.property.no_content ?? 0.} onChange={(e) => setState({ ...state, property: { ...state.property, no_content: Number(e.target.value) } })}></TextField>
+                    <TextField label="分解温度（℃）" placeholder="热分解温度" value={state.property.decomp_temp ?? 0.} onChange={(e) => setState({ ...state, property: { ...state.property, decomp_temp: e.target.value } })}></TextField>
+                    <TextField label="热熔解温度（℃）" placeholder="热溶解温度" value={state.property.diss_temp ?? 0.} onChange={(e) => setState({ ...state, property: { ...state.property, diss_temp: e.target.value } })}></TextField>
+                    <TextField label="密度（g·cm-3）" placeholder="密度" value={state.property.density ?? 0.} onChange={(e) => setState({ ...state, property: { ...state.property, density: e.target.value } })}></TextField>
+                    <TextField label="生成焓（kJ·mol-1）" placeholder="生成焓" value={state.property.formation_enthalpy ?? 0.} onChange={(e) => setState({ ...state, property: { ...state.property, formation_enthalpy: e.target.value } })}></TextField>
+                    <TextField label="撞击感度（J）" placeholder="撞击感度" value={state.property.impact_sensitive ?? 0.} onChange={(e) => setState({ ...state, property: { ...state.property, impact_sensitive: e.target.value } })}></TextField>
+                    <TextField label="摩擦感度（N）" placeholder="摩擦感度" value={state.property.friction_sensitivity ?? 0.} onChange={(e) => setState({ ...state, property: { ...state.property, friction_sensitivity: e.target.value } })}></TextField>
+                    <TextField label="爆速（ms-1）" placeholder="爆速" value={state.property.det_velocity ?? 0.} onChange={(e) => setState({ ...state, property: { ...state.property, det_velocity: e.target.value } })}></TextField>
+                    <TextField label="爆压（GPa）" placeholder="爆压" value={state.property.det_pressure ?? 0.} onChange={(e) => setState({ ...state, property: { ...state.property, det_pressure: e.target.value } })}></TextField>
+                    <TextField label="氮含量（%）" placeholder="氮含量" value={state.property.n_content ?? 0.} onChange={(e) => setState({ ...state, property: { ...state.property, n_content: e.target.value } })}></TextField>
+                    <TextField label="氧含量（%）" placeholder="氧含量" value={state.property.o_content ?? 0.} onChange={(e) => setState({ ...state, property: { ...state.property, o_content: e.target.value } })}></TextField>
+                    <TextField label="氮氧含量（%）" placeholder="氮氧含量" value={state.property.no_content ?? 0.} onChange={(e) => setState({ ...state, property: { ...state.property, no_content: e.target.value } })}></TextField>
                     <Grid2 size={12}>
                         <TextField fullWidth multiline label="参考文献" placeholder="请填写DOI号（可填写多行内容）" value={state.property.references ?? ""} onChange={(e) => setState({ ...state, property: { ...state.property, references: e.target.value } })}></TextField>
                     </Grid2>
@@ -241,18 +259,23 @@ function ComponentItem(props: { component: Component, structure: Structure, call
     const navigate = useNavigate();
     const [component, updateComponent] = useState(props.component)
     const { structure } = props;
+    const [detail] = useFetch(() => getStructureDetail(structure.id), [structure, null, null, [], []], [structure.id])
+    const image = detail[2];
     useEffect(() => {
         setComponent(component.structure_id, component.component_id, component.count).then(props.callback)
     }, [component])
-    return <Box gap={1} display={"flex"} flexDirection={"column"} alignItems={"stretch"} justifyContent={"stretch"}>
+    return <Box gap={1} width={256} display={"flex"} flexDirection={"column"} alignItems={"stretch"} justifyContent={"stretch"}>
+        <Box height={256} display={"flex"} alignItems={"center"} justifyContent={"center"}>{
+            image !== null ? <img style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain" }} src={URL.createObjectURL(new Blob([Uint8Array.from(image.image)], { type: mime.getType(image.filename) ?? `image/png` }))}></img> : <Typography>图像未上传</Typography>
+        }</Box>
         {structure.name !== null ? <Typography>名称：{structure.name}</Typography> : null}
         <Typography>分子式：{structure.formula}</Typography>
         {structure.smiles !== null ? <Typography>SMILES：{structure.smiles}</Typography> : null}
         {structure.charge !== null ? <Typography>电荷：{structure.charge}</Typography> : null}
-        <TextField fullWidth label="数量" type="number" value={component.count} onChange={async (e) => {
+        <TextField fullWidth label="数量" value={component.count} onChange={async (e) => {
             updateComponent({ ...component, count: Number(e.target.value) })
         }}></TextField>
-        { props.ro ? null : <Button variant="contained" color="error" onClick={() => deleteComponent(component.structure_id, component.component_id).then(props.callback)}>删除</Button> }
+        {props.ro ? null : <Button variant="contained" color="error" onClick={() => deleteComponent(component.structure_id, component.component_id).then(props.callback)}>删除</Button>}
         <Button variant="contained" color="info" onClick={() => navigate(`/structure?id=${structure.id}`)}>查看</Button>
     </Box>
 }

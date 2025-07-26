@@ -60,5 +60,5 @@ export function importFromFolder(folderPath: string) {
 
 export type Component = { structure_id: number; component_id: number; count: number }
 export type Structure = { id: number; name: string | null; formula: string; smiles: string | null; charge: number }
-export type Property = { structure_id: number; decomp_temp: number | null; density: number | null; diss_temp: number | null; formation_enthalpy: number | null; impact_sensitive: number | null; friction_sensitivity: number | null; det_velocity: number | null; det_pressure: number | null; n_content: number | null; o_content: number | null; no_content: number | null; references: string | null; remarks: string | null }
+export type Property = { structure_id: number; decomp_temp: string | null; density: string | null; diss_temp: string | null; formation_enthalpy: string | null; impact_sensitive: string | null; friction_sensitivity: string | null; det_velocity: string | null; det_pressure: string | null; n_content: string | null; o_content: string | null; no_content: string | null; references: string | null; remarks: string | null }
 export type Image = { structure_id: number; filename: string; image: number[] }
