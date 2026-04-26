@@ -121,19 +121,18 @@ function calculateGasH(gas: ReturnType<typeof explosionSimulate>) {
 }
 
 export function calculateDP(N: number, M: number, Q: number, density: number) {
-    console.log(N * Math.sqrt(M * Q))
     return [
         1.01 * Math.sqrt(N * Math.sqrt(M * Q)) * (1 + 1.30 * density) * 1000,
         1.558 * Math.pow(density, 2) * N * Math.sqrt(M * Q),
     ];
 }
 
-// const formula = "C3H9N9O7";
+const formula = "C3H9N9O7";
 
-// const atoms = analyseMoleculeFormula(formula);
-// const gas = explosionSimulate(atoms);
-// console.log(atoms)
-// console.log(gas)
+const atoms = analyseMoleculeFormula(formula);
+const gas = explosionSimulate(atoms);
+console.log(atoms)
+console.log(calculateGasH(gas))
 // console.log(- 748.5176 /4.184 + calculateGasH(gas))
 // const[ N,M,Q] = calculateNMQ(atoms, gas, 748.5176)
 // console.log(N,M,Q);

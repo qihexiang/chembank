@@ -217,7 +217,9 @@ export default function StructureView() {
                     <TextField label="氮含量（%）" placeholder="氮含量" value={state.property.n_content ?? 0.} onChange={(e) => setState({ ...state, property: { ...state.property, n_content: e.target.value } })}></TextField>
                     <TextField label="氧含量（%）" placeholder="氧含量" value={state.property.o_content ?? 0.} onChange={(e) => setState({ ...state, property: { ...state.property, o_content: e.target.value } })}></TextField>
                     <TextField label="氮氧含量（%）" placeholder="氮氧含量" value={state.property.no_content ?? 0.} onChange={(e) => setState({ ...state, property: { ...state.property, no_content: e.target.value } })}></TextField>
-                    <Button onClick={() => {
+                    <Button
+                        variant="contained"
+                        onClick={() => {
                         if (state.property.formation_enthalpy === null) {
                             alert("生成焓未设置")
                             return 0
