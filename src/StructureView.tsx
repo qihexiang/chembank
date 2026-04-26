@@ -20,6 +20,7 @@ import mime from "mime";
 import { readBinaryFile } from "@tauri-apps/api/fs";
 import { basename } from "@tauri-apps/api/path";
 import useFetch from "./useFetch";
+import {calculateNMQ,calculateDP,analyseMoleculeFormula ,explosionSimulate} from "./utils"
 
 type ViewState = {
     structure: Structure;
@@ -216,6 +217,23 @@ export default function StructureView() {
                     <TextField label="氮含量（%）" placeholder="氮含量" value={state.property.n_content ?? 0.} onChange={(e) => setState({ ...state, property: { ...state.property, n_content: e.target.value } })}></TextField>
                     <TextField label="氧含量（%）" placeholder="氧含量" value={state.property.o_content ?? 0.} onChange={(e) => setState({ ...state, property: { ...state.property, o_content: e.target.value } })}></TextField>
                     <TextField label="氮氧含量（%）" placeholder="氮氧含量" value={state.property.no_content ?? 0.} onChange={(e) => setState({ ...state, property: { ...state.property, no_content: e.target.value } })}></TextField>
+                    <Button onClick={() => {
+                        if (state.property.formation_enthalpy === null) {
+                            alert("生成焓未设置")
+                            return 0
+                        }
+                        if (state.property.density === null) {
+                            alert("密度未设置")
+                            return 0
+                        }
+                        const atoms = analyseMoleculeFormula(state.structure.formula)
+                        const gas = explosionSimulate(atoms)
+                        const [N,M,Q] = calculateNMQ(atoms, gas, Number(state.property.formation_enthalpy))
+                        const [D,P] = calculateDP(N,M,Q,Number(state.property.density))
+                        setState({...state, property: {...state.property, det_pressure: String(P), det_velocity: String(D) }})
+                    }}>
+                        K-J方程估计爆压爆速（需要正确的分子式和反应物生成焓（单位kJ/mol））
+                    </Button>
                     <Grid2 size={12}>
                         <TextField fullWidth multiline label="参考文献" placeholder="请填写DOI号（可填写多行内容）" value={state.property.references ?? ""} onChange={(e) => setState({ ...state, property: { ...state.property, references: e.target.value } })}></TextField>
                     </Grid2>
