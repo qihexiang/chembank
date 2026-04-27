@@ -13,19 +13,20 @@ export function analyseMoleculeFormula(formula: string) {
 
 export function explosionSimulate(atoms: Record<string, number>) {
     let freeOxygens = atoms["O"] ?? 0;
-    const carbons = atoms["C"];
+    const carbons = atoms["C"] ?? 0;
     const oxygenEnoughForCarbons = carbons <= 2 * freeOxygens;
     const carbonDioxides = oxygenEnoughForCarbons ? carbons : freeOxygens / 2;
     freeOxygens -= carbonDioxides * 2;
-    const hydrogens = atoms["H"];
+    const hydrogens = atoms["H"] ?? 0;
     const oxygenEnoughForHydrogens = hydrogens <= freeOxygens / 2;
     const water = oxygenEnoughForHydrogens ? hydrogens / 2 : freeOxygens;
     freeOxygens -= water;
     const carbonRest = carbons - carbonDioxides;
     const carbonOxides = Math.min(carbonRest, freeOxygens);
     freeOxygens -= carbonOxides;
+    console.log(hydrogens, water)
     const hydrogenGas = hydrogens / 2 - water;
-    const nitrogenGas = atoms["N"] / 2;
+    const nitrogenGas = (atoms["N"] ?? 0) / 2;
     const oxygens = freeOxygens / 2;
     return {
         CO2: carbonDioxides,
@@ -127,11 +128,12 @@ export function calculateDP(N: number, M: number, Q: number, density: number) {
     ];
 }
 
-const formula = "C3H9N9O7";
+const formula = "C6N22K2";
 
 const atoms = analyseMoleculeFormula(formula);
 const gas = explosionSimulate(atoms);
 console.log(atoms)
+console.log(gas)
 console.log(calculateGasH(gas))
 // console.log(- 748.5176 /4.184 + calculateGasH(gas))
 // const[ N,M,Q] = calculateNMQ(atoms, gas, 748.5176)
