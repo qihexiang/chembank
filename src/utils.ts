@@ -21,7 +21,7 @@ export function explosionSimulate(atoms: Record<string, number>) {
     const oxygenEnoughForHydrogens = hydrogens <= freeOxygens / 2;
     const water = oxygenEnoughForHydrogens ? hydrogens / 2 : freeOxygens;
     freeOxygens -= water;
-    const carbonRest = carbonDioxides - carbons;
+    const carbonRest = carbons - carbonDioxides;
     const carbonOxides = Math.min(carbonRest, freeOxygens);
     freeOxygens -= carbonOxides;
     const hydrogenGas = hydrogens / 2 - water;
