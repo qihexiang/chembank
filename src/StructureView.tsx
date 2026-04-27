@@ -20,7 +20,7 @@ import mime from "mime";
 import { readBinaryFile } from "@tauri-apps/api/fs";
 import { basename } from "@tauri-apps/api/path";
 import useFetch from "./useFetch";
-import {calculateNMQ,calculateDP,analyseMoleculeFormula ,explosionSimulate} from "./utils"
+import { calculateNMQ, calculateDP, analyseMoleculeFormula, explosionSimulate } from "./utils"
 
 type ViewState = {
     structure: Structure;
@@ -219,21 +219,27 @@ export default function StructureView() {
                     <TextField label="氮氧含量（%）" placeholder="氮氧含量" value={state.property.no_content ?? 0.} onChange={(e) => setState({ ...state, property: { ...state.property, no_content: e.target.value } })}></TextField>
                     <Button
                         variant="contained"
-                        onClick={() => {
-                        if (state.property.formation_enthalpy === null) {
-                            alert("生成焓未设置")
-                            return 0
-                        }
-                        if (state.property.density === null) {
-                            alert("密度未设置")
-                            return 0
-                        }
-                        const atoms = analyseMoleculeFormula(state.structure.formula)
-                        const gas = explosionSimulate(atoms)
-                        const [N,M,Q] = calculateNMQ(atoms, gas, Number(state.property.formation_enthalpy))
-                        const [D,P] = calculateDP(N,M,Q,Number(state.property.density))
-                        setState({...state, property: {...state.property, det_pressure: String(P), det_velocity: String(D) }})
-                    }}>
+                        onClick={async () => {
+                            if (state.property.formation_enthalpy === null) {
+                                alert("生成焓未设置")
+                                return 0
+                            }
+                            if (state.property.density === null) {
+                                alert("密度未设置")
+                                return 0
+                            }
+                            const atoms = analyseMoleculeFormula(state.structure.formula)
+                            const gas = explosionSimulate(atoms)
+                            const [N, M, Q] = calculateNMQ(atoms, gas, Number(state.property.formation_enthalpy))
+                            if ([N,M,Q].map(value => value < 0).reduce((c,n) => c || n, false)) {
+                                alert(`计算得到的N=${N.toFixed(4)}mol/g，M=${M.toFixed(4)}g/mol，Q=${Q.toFixed(4)}cal/g，包含负值，无法直接导出爆压爆速`)
+                                return 0
+                            }
+                            const [D, P] = calculateDP(N, M, Q, Number(state.property.density))
+                            if (await confirm(`生成气体：\n${Object.entries(gas).map(([gas, mol]) => `${gas}: ${mol} mol`).join("\n")}\n物理参数：\nN=${N.toFixed(4)}mol/g\nM=${M.toFixed(4)}g/mol\nQ=${Q.toFixed(4)}cal/g\n计算的爆炸热为${D.toFixed(4)}m/s，爆压为${P.toFixed(4)}GPa，要填入吗？`)) {
+                                setState({ ...state, property: { ...state.property, det_pressure: String(P), det_velocity: String(D) } })
+                            }
+                        }}>
                         K-J方程估计爆压爆速（需要正确的分子式和反应物生成焓（单位kJ/mol））
                     </Button>
                     <Grid2 size={12}>
