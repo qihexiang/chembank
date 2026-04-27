@@ -128,14 +128,3 @@ export function calculateDP(N: number, M: number, Q: number, density: number) {
     ];
 }
 
-const formula = "C6N22K2";
-
-const atoms = analyseMoleculeFormula(formula);
-const gas = explosionSimulate(atoms);
-console.log(atoms)
-console.log(gas)
-console.log(calculateGasH(gas))
-// console.log(- 748.5176 /4.184 + calculateGasH(gas))
-// const[ N,M,Q] = calculateNMQ(atoms, gas, 748.5176)
-// console.log(N,M,Q);
-// console.log(calculateDP(N,M,Q,1.71))
