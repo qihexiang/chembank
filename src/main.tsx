@@ -7,6 +7,7 @@ import ExportView from "./Export";
 import Home from "./Home";
 import "./main.css";
 import StructureView from "./StructureView";
+import ImportDataPage from "./Import";
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
@@ -19,6 +20,7 @@ ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
           <Route path="/structure" element={<StructureView />}></Route>
           <Route path="/component" element={<ComponentView />}></Route>
           <Route path="/export" element={<ExportView />}></Route>
+          <Route path="/import" element={<ImportDataPage />}></Route>
         </Routes>
       </Container>
     </BrowserRouter>

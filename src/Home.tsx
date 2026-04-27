@@ -44,9 +44,13 @@ export default function Home() {
                     if (folder !== null) {
                         const resetDB = await confirm("导入数据前需要清空数据库。点击确定清空数据库，点击取消取消导入。")
                         if (resetDB) {
+                            navigate("/import")
                             await resetDatabase()
                             importFromFolder(folder as string)
-                                .then(() => message("导入成功"))
+                                .then(() => {
+                                    message("导入成功")
+                                    navigate("/")
+                                })
                                 .then(refreshList)
                                 .catch((e) => message(`导入失败，原因为：${e}`))
                         }
