@@ -12,6 +12,7 @@ import {
     setComponent,
     deleteComponent,
     removeStructure,
+    generateStructureFromSmiles,
 } from "./bindings";
 import { Box, Button, Grid2, Slider, TextField, Typography } from "@mui/material";
 import rdkitModule from "./rdkit";
@@ -29,13 +30,6 @@ type ViewState = {
     property: Property;
     image: Image | null;
 };
-
-async function smilesToSVG(smiles: string) {
-    const rdkit = await rdkitModule;
-    const mol = rdkit.get_mol(smiles);
-    const svg = mol?.get_svg();
-    return svg
-}
 
 async function smilesToCanonical(smiles: string) {
     const rdkit = await rdkitModule;
@@ -92,6 +86,13 @@ export default function StructureView() {
     const refresh = () => getStructureDetail(Number(currentId)).then(
         ([structure, property, image, components, relateds]) => {
             setState({ structure, property: property ?? { ...emptyProperty, structure_id: structure.id }, image, components, relateds });
+        }
+    );
+
+    // 子结构或相关结构变化后只刷新这两份列表，避免覆盖尚未保存的字段编辑
+    const reloadLinks = () => getStructureDetail(Number(currentId)).then(
+        ([, , , components, relateds]) => {
+            setState(current => ({ ...current, components, relateds }))
         }
     );
 
@@ -192,14 +193,31 @@ export default function StructureView() {
                         }
                     }}>选择图片</Button>
                     {state.structure.smiles !== null ? <Button variant={"contained"} color="secondary" onClick={async () => {
-                        const svg = await smilesToSVG(state.structure.smiles!);
-                        if (svg !== undefined) {
-                            const encoder = new TextEncoder();
-                            const encode = encoder.encode(svg);
-                            const image = [...encode];
-                            setState({ ...state, image: { structure_id: state.structure.id, image, filename: "rdkit.svg" } })
-                        } else {
-                            await message("给出的SMILES似乎不正确")
+                        try {
+                            const info = await generateStructureFromSmiles(state.structure.id, state.structure.smiles!);
+                            setState(current => ({
+                                ...current,
+                                structure: {
+                                    ...current.structure,
+                                    formula: info.formula,
+                                    charge: info.formal_charge,
+                                },
+                                property: {
+                                    ...current.property,
+                                    // 质量分数（0–1）转为属性栏使用的百分含量
+                                    n_content: (info.n_mass_fraction * 100).toFixed(2),
+                                    o_content: (info.o_mass_fraction * 100).toFixed(2),
+                                },
+                                image: {
+                                    structure_id: current.structure.id,
+                                    image: [...new TextEncoder().encode(info.svg)],
+                                    filename: "rdkit.svg",
+                                },
+                            }))
+                            // 片段登记在后台完成，重新读取子结构列表
+                            await reloadLinks()
+                        } catch (e) {
+                            await message(String(e))
                         }
                     }}>根据SMILES生成</Button> : null}
                 </Grid2>
@@ -216,7 +234,7 @@ export default function StructureView() {
                     <TextField label="爆压（GPa）" placeholder="爆压" value={state.property.det_pressure ?? 0.} onChange={(e) => setState({ ...state, property: { ...state.property, det_pressure: e.target.value } })}></TextField>
                     <TextField label="氮含量（%）" placeholder="氮含量" value={state.property.n_content ?? 0.} onChange={(e) => setState({ ...state, property: { ...state.property, n_content: e.target.value } })}></TextField>
                     <TextField label="氧含量（%）" placeholder="氧含量" value={state.property.o_content ?? 0.} onChange={(e) => setState({ ...state, property: { ...state.property, o_content: e.target.value } })}></TextField>
-                    <TextField label="氮氧含量（%）" placeholder="氮氧含量" value={state.property.no_content ?? 0.} onChange={(e) => setState({ ...state, property: { ...state.property, no_content: e.target.value } })}></TextField>
+                    <TextField label="氮氧含量（%）" placeholder="氮氧含量" value={(Number(state.property.n_content) ?? 0.) + (Number(state.property.o_content) ?? 0)} onChange={(e) => setState({ ...state, property: { ...state.property, no_content: e.target.value } })}></TextField>
                     <Button
                         variant="contained"
                         onClick={async () => {
@@ -255,7 +273,7 @@ export default function StructureView() {
                 <Grid2 container spacing={2}>
                     <Box display={"flex"} justifyContent={"center"} alignItems={"stretch"} flexDirection={"row"} gap={2} flexWrap={"wrap"}>
                         {
-                            state.components.map(([component, structure], index) => <ComponentItem ro={false} key={index} component={component} structure={structure!} callback={refresh}></ComponentItem>)
+                            state.components.map(([component, structure], index) => <ComponentItem ro={false} key={index} component={component} structure={structure!} callback={reloadLinks}></ComponentItem>)
                         }
                         <Button variant="contained" onClick={async () => {
                             const answer = await confirm("添加子结构前，是否要保存已经填写的信息？")
@@ -272,7 +290,7 @@ export default function StructureView() {
                 <Grid2 container spacing={2}>
                     <Box display={"flex"} justifyContent={"center"} alignItems={"stretch"} flexDirection={"row"} gap={2} flexWrap={"wrap"}>
                         {
-                            state.relateds.map(([component, structure], index) => <ComponentItem key={index} component={component} structure={structure!} callback={refresh} ro></ComponentItem>)
+                            state.relateds.map(([component, structure], index) => <ComponentItem key={index} component={component} structure={structure!} callback={reloadLinks} ro></ComponentItem>)
                         }
                     </Box>
                 </Grid2>

@@ -2,19 +2,22 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use std::{
+    collections::HashMap,
     fs::{self, File},
     io::{Read, Write},
     path::PathBuf,
 };
 
 use sea_orm::{
-    prelude::Expr, ActiveModelTrait, ActiveValue, ColumnTrait, ConnectionTrait, Database, DatabaseConnection, EntityTrait, ModelTrait, PaginatorTrait, QueryFilter, QueryOrder, Schema, TransactionTrait
+    prelude::Expr, ActiveModelTrait, ActiveValue, ColumnTrait, ConnectionTrait, Database, DatabaseConnection, EntityTrait, ModelTrait, PaginatorTrait, QueryFilter, QueryOrder, QuerySelect, Schema, TransactionTrait
 };
 use skip_bom::{BomType, SkipEncodingBom};
 use tauri::State;
 use tokio::sync::Mutex;
 
 use entities::*;
+
+mod chemistry;
 
 struct AppState {
     db: Mutex<Option<DatabaseConnection>>,
@@ -42,6 +45,7 @@ async fn main() {
             set_property,
             search_structure,
             get_structure_detail,
+            generate_structure_from_smiles,
             export_to_folder,
             import_from_folder,
         ])
@@ -216,28 +220,7 @@ async fn set_component(
     let db = db.as_ref().ok_or(format!(
         "无法连接到数据库，请重启程序，如果该问题仍然发生，请联系管理员"
     ))?;
-    let model = component::ActiveModel {
-        structure_id: ActiveValue::set(structure_id),
-        component_id: ActiveValue::set(component_id),
-        count: ActiveValue::Set(count),
-    };
-    if component::Entity::find_by_id((structure_id, component_id))
-        .one(db)
-        .await
-        .map_err(|e| format!("数据库错误，详细信息：\n{:#?}", e))?
-        .is_some()
-    {
-        model
-            .update(db)
-            .await
-            .map_err(|e| format!("数据库故障，详细信息\n{:#?}", e))?;
-    } else {
-        model
-            .insert(db)
-            .await
-            .map_err(|e| format!("数据库故障，详细信息\n{:#?}", e))?;
-    }
-    Ok(())
+    upsert_component(db, structure_id, component_id, count).await
 }
 
 #[tauri::command]
@@ -436,6 +419,156 @@ async fn search_structure(
     Ok((models, pages as u32))
 }
 
+/// 由 SMILES 生成结构信息，并把其中互不连接的片段登记为子结构。
+#[tauri::command]
+#[specta::specta]
+async fn generate_structure_from_smiles(
+    state: State<'_, AppState>,
+    id: u32,
+    smiles: String,
+) -> Result<chemistry::SmilesInfo, String> {
+    let info = tokio::task::spawn_blocking(move || chemistry::analyze_smiles(&smiles))
+        .await
+        .map_err(|e| format!("SMILES 解析任务异常结束：{e}"))??;
+    let db = state.db.lock().await;
+    let db = db.as_ref().ok_or("无法连接到数据库，请重启程序，如果该问题仍然发生，请联系管理员".to_string())?;
+    link_fragments(db, id, &info.fragments).await?;
+    Ok(info)
+}
+
+/// 把片段登记为 `structure_id` 的子结构：库中已有的直接引用，缺失的先新建结构。
+async fn link_fragments(
+    db: &DatabaseConnection,
+    structure_id: u32,
+    fragments: &[chemistry::Fragment],
+) -> Result<(), String> {
+    if fragments.is_empty() {
+        return Ok(());
+    }
+    // `smiles` 是唯一列，先按标准化 SMILES 精确匹配；未命中的片段再与库中所有 SMILES 的
+    // 标准化结果比对一次，以兼容导入数据中未标准化的写法。
+    let mut component_ids = Vec::with_capacity(fragments.len());
+    for fragment in fragments {
+        component_ids.push(find_structure_by_smiles(db, &fragment.smiles).await?);
+    }
+    if component_ids.iter().any(Option::is_none) {
+        let canonical = canonical_smiles_index(db).await?;
+        for (fragment, component_id) in fragments.iter().zip(component_ids.iter_mut()) {
+            if component_id.is_none() {
+                *component_id = canonical.get(&fragment.smiles).copied();
+            }
+        }
+    }
+    let txn = db
+        .begin()
+        .await
+        .map_err(|e| format!("无法开启事务，详细信息\n{:#?}", e))?;
+    for (fragment, component_id) in fragments.iter().zip(component_ids) {
+        let component_id = match component_id {
+            // 片段即当前结构本身，跳过以免自引用
+            Some(component_id) if component_id == structure_id => continue,
+            Some(component_id) => component_id,
+            None => {
+                let charge = i8::try_from(fragment.formal_charge).map_err(|_| {
+                    format!("片段 `{}` 的形式电荷超出可存储范围", fragment.smiles)
+                })?;
+                let model = structure::ActiveModel {
+                    id: ActiveValue::not_set(),
+                    name: ActiveValue::set(None),
+                    formula: ActiveValue::set(fragment.formula.clone()),
+                    smiles: ActiveValue::set(Some(fragment.smiles.clone())),
+                    charge: ActiveValue::set(charge),
+                };
+                model
+                    .insert(&txn)
+                    .await
+                    .map_err(|e| format!("无法新建片段 `{}` 的结构，详细信息\n{:#?}", fragment.smiles, e))?
+                    .id
+            }
+        };
+        upsert_component(&txn, structure_id, component_id, fragment.count).await?;
+    }
+    txn.commit().await.map_err(|e| {
+        format!(
+            "无法提交事务，可能是由于数据库损坏或权限问题，详细信息\n{:#?}",
+            e
+        )
+    })
+}
+
+/// 按标准化 SMILES 精确查找结构。
+async fn find_structure_by_smiles<C: ConnectionTrait>(
+    db: &C,
+    smiles: &str,
+) -> Result<Option<u32>, String> {
+    Ok(structure::Entity::find()
+        .filter(structure::Column::Smiles.eq(smiles))
+        .one(db)
+        .await
+        .map_err(|e| format!("查询错误，详细信息\n{:#?}", e))?
+        .map(|model| model.id))
+}
+
+/// 库中全部结构的 SMILES 标准化后的索引，同一标准化 SMILES 保留首次出现的结构。
+async fn canonical_smiles_index<C: ConnectionTrait>(
+    db: &C,
+) -> Result<HashMap<String, u32>, String> {
+    let stored: Vec<(u32, Option<String>)> = structure::Entity::find()
+        .select_only()
+        .column(structure::Column::Id)
+        .column(structure::Column::Smiles)
+        .filter(structure::Column::Smiles.is_not_null())
+        .into_tuple()
+        .all(db)
+        .await
+        .map_err(|e| format!("查询错误，详细信息\n{:#?}", e))?;
+    let smiles = stored
+        .iter()
+        .filter_map(|(_, smiles)| smiles.clone())
+        .collect::<Vec<_>>();
+    let canonical = tokio::task::spawn_blocking(move || chemistry::canonical_smiles_batch(&smiles))
+        .await
+        .map_err(|e| format!("SMILES 标准化任务异常结束：{e}"))??;
+    let mut index = HashMap::new();
+    for ((id, _), canonical) in stored.iter().zip(canonical) {
+        if let Some(canonical) = canonical {
+            index.entry(canonical).or_insert(*id);
+        }
+    }
+    Ok(index)
+}
+
+/// 写入或更新子结构数量。
+async fn upsert_component<C: ConnectionTrait>(
+    db: &C,
+    structure_id: u32,
+    component_id: u32,
+    count: u32,
+) -> Result<(), String> {
+    let model = component::ActiveModel {
+        structure_id: ActiveValue::set(structure_id),
+        component_id: ActiveValue::set(component_id),
+        count: ActiveValue::set(count),
+    };
+    if component::Entity::find_by_id((structure_id, component_id))
+        .one(db)
+        .await
+        .map_err(|e| format!("数据库错误，详细信息：\n{:#?}", e))?
+        .is_some()
+    {
+        model
+            .update(db)
+            .await
+            .map_err(|e| format!("数据库故障，详细信息\n{:#?}", e))?;
+    } else {
+        model
+            .insert(db)
+            .await
+            .map_err(|e| format!("数据库故障，详细信息\n{:#?}", e))?;
+    }
+    Ok(())
+}
+
 fn write_bom<T: std::io::Write>(w: &mut T) -> std::io::Result<()> {
     w.write_all(&[0xEF, 0xBB, 0xBF])
 }
@@ -621,6 +754,7 @@ fn export_bindings() {
             set_property,
             search_structure,
             get_structure_detail,
+            generate_structure_from_smiles,
             export_to_folder,
             import_from_folder,
         ],
@@ -669,4 +803,140 @@ async fn write_to_csv() {
     for record in structures {
         writer.serialize(record).unwrap();
     }
+}
+
+/// 新建一份独立的临时数据库，避免影响真实数据。
+async fn temp_db(name: &str) -> (DatabaseConnection, PathBuf) {
+    let path = std::env::temp_dir().join(format!("chembank_{name}_{}.db", std::process::id()));
+    let _ = fs::remove_file(&path);
+    let url = format!(
+        "sqlite:{}?mode=rwc",
+        path.to_string_lossy().replace('\\', "/")
+    );
+    let db = Database::connect(url).await.unwrap();
+    init_db(&db).await.unwrap();
+    (db, path)
+}
+
+async fn close_temp_db(db: DatabaseConnection, path: PathBuf) {
+    db.close().await.unwrap();
+    let _ = fs::remove_file(path);
+}
+
+async fn insert_structure(
+    db: &DatabaseConnection,
+    name: &str,
+    formula: &str,
+    smiles: &str,
+    charge: i8,
+) -> u32 {
+    structure::ActiveModel {
+        id: ActiveValue::not_set(),
+        name: ActiveValue::set(Some(name.to_string())),
+        formula: ActiveValue::set(formula.to_string()),
+        smiles: ActiveValue::set(Some(smiles.to_string())),
+        charge: ActiveValue::set(charge),
+    }
+    .insert(db)
+    .await
+    .unwrap()
+    .id
+}
+
+/// 库中全部结构的（分子式，SMILES，电荷）。
+async fn stored_structures(db: &DatabaseConnection) -> Vec<(String, Option<String>, i8)> {
+    let mut structures = structure::Entity::find()
+        .select_only()
+        .column(structure::Column::Formula)
+        .column(structure::Column::Smiles)
+        .column(structure::Column::Charge)
+        .into_tuple()
+        .all(db)
+        .await
+        .unwrap();
+    structures.sort();
+    structures
+}
+
+/// 指定结构的（子结构ID，数目）。
+async fn stored_components(db: &DatabaseConnection, structure_id: u32) -> Vec<(u32, u32)> {
+    let mut components = component::Entity::find()
+        .select_only()
+        .column(component::Column::ComponentId)
+        .column(component::Column::Count)
+        .filter(component::Column::StructureId.eq(structure_id))
+        .into_tuple()
+        .all(db)
+        .await
+        .unwrap();
+    components.sort();
+    components
+}
+
+#[tokio::test]
+async fn link_fragments_reuses_existing_and_creates_missing() {
+    let (db, path) = temp_db("link_fragments").await;
+    let sodium = insert_structure(&db, "钠离子", "Na+", "[Na+]", 1).await;
+    let salt = insert_structure(&db, "氯化钠", "ClNa", "[Na+].[Cl-].[Cl-]", 0).await;
+    let fragments = chemistry::analyze_smiles("[Na+].[Cl-].[Cl-]").unwrap().fragments;
+
+    link_fragments(&db, salt, &fragments).await.unwrap();
+    // 重复执行应保持同一结果
+    link_fragments(&db, salt, &fragments).await.unwrap();
+
+    let chloride = find_structure_by_smiles(&db, "[Cl-]").await.unwrap().unwrap();
+    assert_ne!(chloride, sodium);
+    assert_eq!(
+        stored_structures(&db).await,
+        vec![
+            ("Cl-".to_string(), Some("[Cl-]".to_string()), -1),
+            ("ClNa".to_string(), Some("[Na+].[Cl-].[Cl-]".to_string()), 0),
+            ("Na+".to_string(), Some("[Na+]".to_string()), 1),
+        ]
+    );
+    assert_eq!(
+        stored_components(&db, salt).await,
+        vec![(sodium, 1), (chloride, 2)]
+    );
+    close_temp_db(db, path).await;
+}
+
+#[tokio::test]
+async fn link_fragments_skips_the_structure_itself() {
+    let (db, path) = temp_db("link_fragments_self").await;
+    let sodium = insert_structure(&db, "钠离子", "Na+", "[Na+]", 1).await;
+    let fragments = chemistry::analyze_smiles("[Na+].[Cl-]").unwrap().fragments;
+
+    link_fragments(&db, sodium, &fragments).await.unwrap();
+
+    let chloride = find_structure_by_smiles(&db, "[Cl-]").await.unwrap().unwrap();
+    assert_eq!(stored_components(&db, sodium).await, vec![(chloride, 1)]);
+    // 钠离子不被重复创建
+    assert_eq!(stored_structures(&db).await.len(), 2);
+    close_temp_db(db, path).await;
+}
+
+#[tokio::test]
+async fn link_fragments_matches_non_canonical_stored_smiles() {
+    let (db, path) = temp_db("link_fragments_canonical").await;
+    let benzene = insert_structure(&db, "苯", "C6H6", "C1=CC=CC=C1", 0).await;
+    let mixture = insert_structure(&db, "苯与水", "C6H6O", "C1=CC=CC=C1.O", 0).await;
+    let fragments = chemistry::analyze_smiles("C1=CC=CC=C1.O").unwrap().fragments;
+
+    link_fragments(&db, mixture, &fragments).await.unwrap();
+
+    let water = find_structure_by_smiles(&db, "O").await.unwrap().unwrap();
+    assert_eq!(
+        stored_components(&db, mixture).await,
+        vec![(benzene, 1), (water, 1)]
+    );
+    assert_eq!(
+        stored_structures(&db).await,
+        vec![
+            ("C6H6".to_string(), Some("C1=CC=CC=C1".to_string()), 0),
+            ("C6H6O".to_string(), Some("C1=CC=CC=C1.O".to_string()), 0),
+            ("H2O".to_string(), Some("O".to_string()), 0),
+        ]
+    );
+    close_temp_db(db, path).await;
 }
