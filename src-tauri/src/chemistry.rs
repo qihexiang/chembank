@@ -237,6 +237,78 @@ pub fn canonical_smiles_batch(smiles: &[String]) -> Result<Vec<Option<String>>, 
     })
 }
 
+/// 逐个 SMILES 匹配官能团（ID 与 SMARTS），返回各自命中的官能团 ID。
+pub fn matching_functional_groups(
+    smiles: &[String],
+    groups: &[(u32, String)],
+) -> Result<Vec<Vec<u32>>, String> {
+    if smiles.is_empty() || groups.is_empty() {
+        return Ok(vec![Vec::new(); smiles.len()]);
+    }
+    init_python();
+    Python::attach(|py| {
+        let chem = py
+            .import("rdkit.Chem")
+            .map_err(|e| format!("无法导入 RDKit，请确认程序使用的 Python 中已安装 rdkit：{e}"))?;
+        let parse_smarts = chem
+            .getattr("MolFromSmarts")
+            .map_err(|e| format!("RDKit 缺少 MolFromSmarts：{e}"))?;
+        let patterns = groups
+            .iter()
+            .map(|(id, smarts)| match parse_smarts.call1((smarts.as_str(),)) {
+                Ok(pattern) if !pattern.is_none() => Ok((*id, pattern)),
+                Ok(_) => Err(format!("官能团 SMARTS `{smarts}` 无法解析，请检查语法")),
+                Err(e) => Err(format!("RDKit 解析官能团 SMARTS `{smarts}` 时出错：{e}")),
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        let parse = chem
+            .getattr("MolFromSmiles")
+            .map_err(|e| format!("RDKit 缺少 MolFromSmiles：{e}"))?;
+        smiles
+            .iter()
+            .map(|smiles| {
+                let mol = parse
+                    .call1((smiles.as_str(),))
+                    .map_err(|e| format!("RDKit 解析 SMILES `{smiles}` 时出错：{e}"))?;
+                // 无法解析的 SMILES 视为不含任何官能团，而不是让整批匹配失败
+                if mol.is_none() {
+                    return Ok(Vec::new());
+                }
+                let mut matched = Vec::new();
+                for (id, pattern) in &patterns {
+                    let hit = mol
+                        .call_method1("HasSubstructMatch", (pattern,))
+                        .and_then(|hit| hit.extract::<bool>())
+                        .map_err(|e| format!("RDKit 匹配 SMILES `{smiles}` 的官能团时出错：{e}"))?;
+                    if hit {
+                        matched.push(*id);
+                    }
+                }
+                Ok(matched)
+            })
+            .collect()
+    })
+}
+
+/// 校验 SMARTS 是否可被 RDKit 编译。
+pub fn validate_smarts(smarts: &str) -> Result<(), String> {
+    if smarts.trim().is_empty() {
+        return Err("SMARTS 不能为空".to_string());
+    }
+    init_python();
+    Python::attach(|py| {
+        let pattern = py
+            .import("rdkit.Chem")
+            .and_then(|chem| chem.getattr("MolFromSmarts"))
+            .and_then(|parse| parse.call1((smarts,)))
+            .map_err(|e| format!("RDKit 解析 SMARTS `{smarts}` 时出错：{e}"))?;
+        if pattern.is_none() {
+            return Err(format!("SMARTS `{smarts}` 无法解析，请检查语法"));
+        }
+        Ok(())
+    })
+}
+
 /// 二维结构式 SVG，由 RDKit 直接绘制。
 fn structure_svg(
     py: Python<'_>,
@@ -334,7 +406,10 @@ fn venv_base_home(pyvenv_cfg: &Path) -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use super::{analyze_smiles, canonical_smiles_batch, Fragment};
+    use super::{
+        analyze_smiles, canonical_smiles_batch, matching_functional_groups, validate_smarts,
+        Fragment,
+    };
 
     fn formula(smiles: &str) -> String {
         analyze_smiles(smiles).unwrap().formula
@@ -428,5 +503,64 @@ mod tests {
                 Some("O=C([O-])[O-]".to_string()),
             ]
         );
+    }
+
+    fn patterns() -> Vec<(u32, String)> {
+        vec![
+            (1, "[#6][$([NX3](=O)=O),$([NX3+](=O)[O-])]".to_string()),
+            (2, "[OX2][NX3+](=O)[O-]".to_string()),
+            (3, "[$([NX2]=[NX2+]=[NX1-]),$([NX1-][NX2+]#[NX1])]".to_string()),
+            (4, "c1ccccc1".to_string()),
+        ]
+    }
+
+    #[test]
+    fn matches_functional_groups() {
+        let matched = matching_functional_groups(
+            &[
+                "O=[N+]([O-])c1ccccc1".to_string(),
+                "CO[N+](=O)[O-]".to_string(),
+                "CN=[N+]=[N-]".to_string(),
+                "CCO".to_string(),
+            ],
+            &patterns(),
+        )
+        .unwrap();
+        assert_eq!(
+            matched,
+            vec![vec![1, 4], vec![2], vec![3], Vec::<u32>::new()]
+        );
+    }
+
+    #[test]
+    fn matching_functional_groups_skips_unparsable_smiles() {
+        assert_eq!(
+            matching_functional_groups(
+                &["C1CC".to_string(), "c1ccccc1".to_string()],
+                &[(4, "c1ccccc1".to_string())],
+            )
+            .unwrap(),
+            vec![Vec::new(), vec![4]]
+        );
+    }
+
+    #[test]
+    fn matching_functional_groups_without_patterns() {
+        assert_eq!(
+            matching_functional_groups(&["c1ccccc1".to_string()], &[]).unwrap(),
+            vec![Vec::<u32>::new()]
+        );
+    }
+
+    #[test]
+    fn matching_functional_groups_rejects_invalid_smarts() {
+        assert!(matching_functional_groups(&["C".to_string()], &[(1, "[".to_string())]).is_err());
+    }
+
+    #[test]
+    fn validate_smarts_rejects_invalid_patterns() {
+        assert!(validate_smarts("[N+](=O)[O-]").is_ok());
+        assert!(validate_smarts("[").is_err());
+        assert!(validate_smarts("   ").is_err());
     }
 }

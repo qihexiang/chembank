@@ -14,7 +14,7 @@ export default function ComponentView() {
     const [componentCount, setComponentCount] = useState(1);
     const [keyword, setKeyword] = useState<string | null>(null)
     const [[minCharge, maxCharge], setChargeRange] = useState<[number, number]>([-10, 10])
-    const [[structures, count]] = useFetch(() => searchStructure(100, page, keyword, maxCharge, minCharge), [[], 0], [page, keyword, minCharge, maxCharge]);
+    const [[structures, count]] = useFetch(() => searchStructure(100, page, keyword, maxCharge, minCharge, []), [[], 0], [page, keyword, minCharge, maxCharge]);
     const [selected, setSelected] = useState<number | null>(null);
     useEffect(() => {
         if (page > count) {

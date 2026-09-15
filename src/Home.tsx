@@ -1,8 +1,8 @@
-import { Box, Button, ButtonGroup, Grid2, Slider, TextField, Typography } from "@mui/material";
+import { Autocomplete, Box, Button, ButtonGroup, Grid2, Slider, TextField, Typography } from "@mui/material";
 import { confirm, message, open, save } from "@tauri-apps/api/dialog";
 import { useEffect, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router";
-import { createStructure, importFromFolder, removeStructure, resetDatabase, searchStructure } from "./bindings";
+import { createStructure, FunctionalGroup, importFromFolder, listFunctionalGroups, removeStructure, resetDatabase, searchStructure } from "./bindings";
 import rdkitModule from "./rdkit";
 import useFetch from "./useFetch";
 
@@ -14,14 +14,19 @@ export default function Home() {
     const page = Number(searchParams.get("page") ?? "0");
     const [keyword, setKeyword] = useState<string | null>(null)
     const [[minCharge, maxCharge], setChargeRange] = useState([0, 0]);
+    const [functionalGroups, setFunctionalGroups] = useState<FunctionalGroup[]>([]);
+    const [functionalGroupIds, setFunctionalGroupIds] = useState<number[]>([]);
     const [[structures, count], refreshList] = useFetch(async () => {
         const processedKeyword = await rdkitModule.then(
             rdkit => keyword !== null ? rdkit.get_mol(keyword) : null
         ).then(
             mol => mol?.get_smiles() ?? keyword
         )
-        return searchStructure(100, page, processedKeyword, maxCharge, minCharge)
-    }, [[], 0], [page, keyword, minCharge, maxCharge]);
+        return searchStructure(100, page, processedKeyword, maxCharge, minCharge, functionalGroupIds)
+    }, [[], 0], [page, keyword, minCharge, maxCharge, functionalGroupIds]);
+    useEffect(() => {
+        listFunctionalGroups().then(setFunctionalGroups).catch(e => message(String(e)))
+    }, [])
     useEffect(() => {
         if (page >= count) {
             navigate(`/?page=${Math.max(0, count - 1)}`)
@@ -72,6 +77,7 @@ export default function Home() {
                     await resetDatabase();
                     refreshList()
                 }}>清空数据</Button>
+                <Button variant="contained" color="info" onClick={() => navigate("/functional-group")}>官能团</Button>
             </Grid2>
             <Grid2 container alignItems={"center"} flexDirection={"row"} size={12} spacing={2}>
                 <TextField sx={{ width: 512 }} placeholder="输入名称、分子式或SMILES查询" label="关键词（名称/分子式/SMILES）" value={keyword ?? ""} onChange={(e) => { if (e.target.value === "") { setKeyword(null) } else { setKeyword(e.target.value) } }}></TextField>
@@ -92,6 +98,16 @@ export default function Home() {
                     }
                 ></Slider>
                 </Box>
+                <Autocomplete
+                    multiple
+                    sx={{ width: 320 }}
+                    options={functionalGroups}
+                    getOptionLabel={(option) => option.name}
+                    isOptionEqualToValue={(option, value) => option.id === value.id}
+                    value={functionalGroups.filter(group => functionalGroupIds.includes(group.id))}
+                    onChange={(_, value) => setFunctionalGroupIds(value.map(group => group.id))}
+                    renderInput={(params) => <TextField {...params} label="官能团（需同时含有）" placeholder="选择官能团"></TextField>}
+                ></Autocomplete>
             </Grid2>
         </Grid2>
         <Grid2>

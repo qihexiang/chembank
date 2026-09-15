@@ -9,7 +9,7 @@ use std::{
 };
 
 use sea_orm::{
-    prelude::Expr, ActiveModelTrait, ActiveValue, ColumnTrait, ConnectionTrait, Database, DatabaseConnection, EntityTrait, ModelTrait, PaginatorTrait, QueryFilter, QueryOrder, QuerySelect, Schema, TransactionTrait
+    prelude::Expr, sea_query::Func, ActiveModelTrait, ActiveValue, ColumnTrait, ConnectionTrait, Database, DatabaseConnection, EntityTrait, JoinType, ModelTrait, PaginatorTrait, QueryFilter, QueryOrder, QuerySelect, RelationTrait, Schema, Select, TransactionTrait
 };
 use skip_bom::{BomType, SkipEncodingBom};
 use tauri::State;
@@ -18,6 +18,7 @@ use tokio::sync::Mutex;
 use entities::*;
 
 mod chemistry;
+mod functional_groups;
 
 struct AppState {
     db: Mutex<Option<DatabaseConnection>>,
@@ -46,6 +47,10 @@ async fn main() {
             search_structure,
             get_structure_detail,
             generate_structure_from_smiles,
+            list_functional_groups,
+            create_functional_group,
+            remove_functional_group,
+            rematch_functional_groups,
             export_to_folder,
             import_from_folder,
         ])
@@ -107,7 +112,7 @@ async fn create_structure(
         id: ActiveValue::not_set(),
         name: ActiveValue::set(name),
         formula: ActiveValue::set(formula),
-        smiles: ActiveValue::set(smiles),
+        smiles: ActiveValue::set(smiles.clone()),
         charge: ActiveValue::set(charge),
     };
     let model = model.insert(db).await.map_err(|e| {
@@ -116,6 +121,7 @@ async fn create_structure(
             e
         )
     })?;
+    functional_groups::match_structures(db, &[(model.id, smiles)]).await?;
     Ok(model.id)
 }
 
@@ -142,7 +148,7 @@ async fn update_structure(
     let mut model: structure::ActiveModel = model.into();
     model.name = ActiveValue::set(name);
     model.formula = ActiveValue::set(formula);
-    model.smiles = ActiveValue::set(smiles);
+    model.smiles = ActiveValue::set(smiles.clone());
     model.charge = ActiveValue::set(charge);
     model.update(db).await.map_err(|e| {
         format!(
@@ -150,6 +156,7 @@ async fn update_structure(
             e
         )
     })?;
+    functional_groups::match_structures(db, &[(id, smiles)]).await?;
     Ok(())
 }
 
@@ -178,6 +185,11 @@ async fn remove_structure(state: State<'_, AppState>, id: u32) -> Result<(), Str
     };
     component::Entity::delete_many()
         .filter(component::Column::StructureId.eq(id))
+        .exec(&txn)
+        .await
+        .map_err(|e| format!("数据库故障，详细信息\n{:#?}", e))?;
+    structure_functional_group::Entity::delete_many()
+        .filter(structure_functional_group::Column::StructureId.eq(id))
         .exec(&txn)
         .await
         .map_err(|e| format!("数据库故障，详细信息\n{:#?}", e))?;
@@ -362,6 +374,32 @@ async fn get_structure_detail(
     Ok((model, property_model, image_model, components, relateds))
 }
 
+/// 只保留同时含有 `functional_group_ids` 全部官能团的结构。
+fn filter_by_functional_groups(
+    models: Select<structure::Entity>,
+    functional_group_ids: &[u32],
+) -> Select<structure::Entity> {
+    if functional_group_ids.is_empty() {
+        return models;
+    }
+    models
+        .join(
+            JoinType::InnerJoin,
+            structure_functional_group::Relation::Structure.def().rev(),
+        )
+        .filter(
+            structure_functional_group::Column::FunctionalGroupId
+                .is_in(functional_group_ids.to_vec()),
+        )
+        .group_by(structure::Column::Id)
+        .having(
+            Expr::expr(Func::count_distinct(Expr::col(
+                structure_functional_group::Column::FunctionalGroupId,
+            )))
+            .eq(functional_group_ids.len() as i32),
+        )
+}
+
 #[tauri::command]
 #[specta::specta]
 async fn search_structure(
@@ -371,6 +409,7 @@ async fn search_structure(
     keyword: Option<String>,
     max_charge: i8,
     min_charge: i8,
+    functional_group_ids: Vec<u32>,
 ) -> Result<(Vec<structure::Model>, u32), String> {
     let db = state.db.lock().await;
     let db = db.as_ref().ok_or(format!(
@@ -399,6 +438,7 @@ async fn search_structure(
             .or(Expr::col((property::Entity, property::Column::OContent)).like(&keyword))
         );
     }
+    let models = filter_by_functional_groups(models, &functional_group_ids);
     let models = models
         .filter(structure::Column::Charge.gte(min_charge))
         .filter(structure::Column::Charge.lte(max_charge))
@@ -463,6 +503,7 @@ async fn link_fragments(
         .begin()
         .await
         .map_err(|e| format!("无法开启事务，详细信息\n{:#?}", e))?;
+    let mut created = Vec::new();
     for (fragment, component_id) in fragments.iter().zip(component_ids) {
         let component_id = match component_id {
             // 片段即当前结构本身，跳过以免自引用
@@ -479,15 +520,18 @@ async fn link_fragments(
                     smiles: ActiveValue::set(Some(fragment.smiles.clone())),
                     charge: ActiveValue::set(charge),
                 };
-                model
+                let created_id = model
                     .insert(&txn)
                     .await
                     .map_err(|e| format!("无法新建片段 `{}` 的结构，详细信息\n{:#?}", fragment.smiles, e))?
-                    .id
+                    .id;
+                created.push((created_id, Some(fragment.smiles.clone())));
+                created_id
             }
         };
         upsert_component(&txn, structure_id, component_id, fragment.count).await?;
     }
+    functional_groups::match_structures(&txn, &created).await?;
     txn.commit().await.map_err(|e| {
         format!(
             "无法提交事务，可能是由于数据库损坏或权限问题，详细信息\n{:#?}",
@@ -573,6 +617,101 @@ fn write_bom<T: std::io::Write>(w: &mut T) -> std::io::Result<()> {
     w.write_all(&[0xEF, 0xBB, 0xBF])
 }
 
+/// 列出全部官能团。
+#[tauri::command]
+#[specta::specta]
+async fn list_functional_groups(
+    state: State<'_, AppState>,
+) -> Result<Vec<functional_group::Model>, String> {
+    let db = state.db.lock().await;
+    let db = db.as_ref().ok_or("无法连接到数据库，请重启程序，如果该问题仍然发生，请联系管理员".to_string())?;
+    functional_group::Entity::find()
+        .order_by_asc(functional_group::Column::Id)
+        .all(db)
+        .await
+        .map_err(|e| format!("查询错误，详细信息\n{:#?}", e))
+}
+
+/// 新增官能团，并对全部既有结构回填该官能团的匹配结果。
+#[tauri::command]
+#[specta::specta]
+async fn create_functional_group(
+    state: State<'_, AppState>,
+    name: String,
+    smarts: String,
+) -> Result<u32, String> {
+    let name = name.trim().to_string();
+    let smarts = smarts.trim().to_string();
+    if name.is_empty() {
+        return Err("官能团名称不能为空".to_string());
+    }
+    tokio::task::spawn_blocking({
+        let smarts = smarts.clone();
+        move || chemistry::validate_smarts(&smarts)
+    })
+    .await
+    .map_err(|e| format!("SMARTS 校验任务异常结束：{e}"))??;
+    let db = state.db.lock().await;
+    let db = db.as_ref().ok_or("无法连接到数据库，请重启程序，如果该问题仍然发生，请联系管理员".to_string())?;
+    let model = functional_group::ActiveModel {
+        id: ActiveValue::not_set(),
+        name: ActiveValue::set(name),
+        smarts: ActiveValue::set(smarts),
+    };
+    let model = model.insert(db).await.map_err(|e| {
+        format!(
+            "无法添加官能团，请检查是否与已有官能团重名，详细信息\n{:#?}",
+            e
+        )
+    })?;
+    functional_groups::rematch_groups(db, &[model.id]).await?;
+    Ok(model.id)
+}
+
+/// 删除官能团及其全部关联。
+#[tauri::command]
+#[specta::specta]
+async fn remove_functional_group(state: State<'_, AppState>, id: u32) -> Result<(), String> {
+    let db = state.db.lock().await;
+    let db = db.as_ref().ok_or("无法连接到数据库，请重启程序，如果该问题仍然发生，请联系管理员".to_string())?;
+    delete_functional_group(db, id).await
+}
+
+async fn delete_functional_group(db: &DatabaseConnection, id: u32) -> Result<(), String> {
+    let txn = db
+        .begin()
+        .await
+        .map_err(|e| format!("无法开启事务，详细信息\n{:#?}", e))?;
+    structure_functional_group::Entity::delete_many()
+        .filter(structure_functional_group::Column::FunctionalGroupId.eq(id))
+        .exec(&txn)
+        .await
+        .map_err(|e| format!("数据库故障，详细信息\n{:#?}", e))?;
+    functional_group::Entity::find_by_id(id)
+        .one(&txn)
+        .await
+        .map_err(|e| format!("数据库故障，详细信息\n{:#?}", e))?
+        .ok_or("未找到对应官能团，可能已经删除")?
+        .delete(&txn)
+        .await
+        .map_err(|e| format!("数据库故障，详细信息\n{:#?}", e))?;
+    txn.commit().await.map_err(|e| {
+        format!(
+            "无法提交事务，可能是由于数据库损坏或权限问题，详细信息\n{:#?}",
+            e
+        )
+    })
+}
+
+/// 按当前词表重算全部结构的官能团关联。
+#[tauri::command]
+#[specta::specta]
+async fn rematch_functional_groups(state: State<'_, AppState>) -> Result<(), String> {
+    let db = state.db.lock().await;
+    let db = db.as_ref().ok_or("无法连接到数据库，请重启程序，如果该问题仍然发生，请联系管理员".to_string())?;
+    functional_groups::rematch_all(db).await
+}
+
 #[tauri::command]
 #[specta::specta]
 async fn import_from_folder(
@@ -583,6 +722,28 @@ async fn import_from_folder(
     let db = db.as_ref().ok_or(format!(
         "无法连接到数据库，请重启程序，如果该问题仍然发生，请联系管理员"
     ))?;
+    // 词表随数据导入：先清掉 reset_database 后自动写入的预置项，再读导出目录中的词表
+    functional_group::Entity::delete_many()
+        .exec(db)
+        .await
+        .map_err(|e| format!("写入失败，原因：\n{:#?}", e))?;
+    let functional_group_csv = folder_path.join("functional_groups.csv");
+    if functional_group_csv.is_file() {
+        let functional_group_csv =
+            File::open(&functional_group_csv).map_err(|e| format!("无法打开表格，{:#?}", e))?;
+        let functional_group_csv = SkipEncodingBom::new(&[BomType::UTF8], functional_group_csv);
+        let mut functional_group_csv = csv::Reader::from_reader(functional_group_csv);
+        for model in functional_group_csv.deserialize() {
+            let model: functional_group::Model =
+                model.map_err(|e| format!("functional_group表格式不正确：\n{:#?}", e))?;
+            let model: functional_group::ActiveModel = model.into();
+            let model = model.reset_all();
+            model
+                .insert(db)
+                .await
+                .map_err(|e| format!("写入失败，原因：\n{:#?}", e))?;
+        }
+    }
     let structure_csv = folder_path.join("structures.csv");
     let structure_csv = File::open(structure_csv).map_err(|e| format!("无法打开表格，{:#?}", e))?;
     let structure_csv = SkipEncodingBom::new(&[BomType::UTF8], structure_csv);
@@ -597,6 +758,8 @@ async fn import_from_folder(
             .await
             .map_err(|e| format!("写入失败，原因：\n{:#?}", e))?;
     }
+    // 结构入库后按词表补齐关联（关联是派生数据，不随表格导出）
+    functional_groups::rematch_all(db).await?;
     let property_csv = folder_path.join("properties.csv");
     let property_csv = File::open(property_csv).map_err(|e| format!("无法打开表格，{:#?}", e))?;
     let property_csv = SkipEncodingBom::new(&[BomType::UTF8], property_csv);
@@ -713,6 +876,21 @@ async fn export_to_folder(state: State<'_, AppState>, folder_path: PathBuf) -> R
             .serialize(component)
             .map_err(|e| format!("写入错误，原因为：\n{:#?}", e))?;
     }
+    let functional_groups_csv = folder_path.join("functional_groups.csv");
+    let mut functional_groups_csv =
+        File::create(functional_groups_csv).map_err(|e| format!("无法创建表格：\n{:#?}", e))?;
+    write_bom(&mut functional_groups_csv).map_err(|e| format!("无法写入文件：\n{:#?}", e))?;
+    let mut functional_group_csv = csv::Writer::from_writer(functional_groups_csv);
+    let functional_groups = functional_group::Entity::find()
+        .order_by_asc(functional_group::Column::Id)
+        .all(db)
+        .await
+        .map_err(|e| format!("查询错误，详细信息\n{:#?}", e))?;
+    for functional_group in functional_groups {
+        functional_group_csv
+            .serialize(functional_group)
+            .map_err(|e| format!("写入错误，原因为：\n{:#?}", e))?;
+    }
     let image_folder = folder_path.join("images");
     let _ = fs::create_dir(&image_folder);
     let mut image_pages = image::Entity::find()
@@ -755,6 +933,10 @@ fn export_bindings() {
             search_structure,
             get_structure_detail,
             generate_structure_from_smiles,
+            list_functional_groups,
+            create_functional_group,
+            remove_functional_group,
+            rematch_functional_groups,
             export_to_folder,
             import_from_folder,
         ],
@@ -765,15 +947,25 @@ fn export_bindings() {
 
 async fn init_db(db: &DatabaseConnection) -> Result<(), String> {
     let builder = db.get_database_backend();
-    let structure_stmt = Schema::new(builder).create_table_from_entity(structure::Entity);
-    let component_stmt = Schema::new(builder).create_table_from_entity(component::Entity);
-    let property_stmt = Schema::new(builder).create_table_from_entity(property::Entity);
-    let image_stmt = Schema::new(builder).create_table_from_entity(image::Entity);
-    for stmt in vec![structure_stmt, component_stmt, property_stmt, image_stmt] {
+    let statements = [
+        Schema::new(builder).create_table_from_entity(structure::Entity),
+        Schema::new(builder).create_table_from_entity(component::Entity),
+        Schema::new(builder).create_table_from_entity(property::Entity),
+        Schema::new(builder).create_table_from_entity(image::Entity),
+        Schema::new(builder).create_table_from_entity(functional_group::Entity),
+        Schema::new(builder).create_table_from_entity(structure_functional_group::Entity),
+    ];
+    for mut stmt in statements {
+        // 增量建表：老库已存在的表不能中断后续建表
+        stmt.if_not_exists();
         let stmt = builder.build(&stmt);
         db.execute(stmt)
             .await
             .map_err(|e| format!("未能完成初始化，详细信息：\n{:#?}", e))?;
+    }
+    // 词表为空说明是新库或老库首次升级：写入预置官能团，并补齐既有结构的关联
+    if functional_groups::seed(db).await? {
+        functional_groups::rematch_all(db).await?;
     }
     Ok(())
 }
@@ -938,5 +1130,186 @@ async fn link_fragments_matches_non_canonical_stored_smiles() {
             ("H2O".to_string(), Some("O".to_string()), 0),
         ]
     );
+    close_temp_db(db, path).await;
+}
+
+/// 某结构命中的官能团名称，按词表顺序。
+async fn structure_functional_group_names(
+    db: &DatabaseConnection,
+    structure_id: u32,
+) -> Vec<String> {
+    let names = structure_functional_group::Entity::find()
+        .select_only()
+        .column(functional_group::Column::Name)
+        .join(
+            JoinType::InnerJoin,
+            structure_functional_group::Relation::FunctionalGroup.def(),
+        )
+        .filter(structure_functional_group::Column::StructureId.eq(structure_id))
+        .order_by_asc(functional_group::Column::Id)
+        .into_tuple::<(String,)>()
+        .all(db)
+        .await
+        .unwrap();
+    names.into_iter().map(|(name,)| name).collect()
+}
+
+/// 官能团检索命中的结构 ID，按 ID 升序。
+async fn search_ids_by_functional_groups(
+    db: &DatabaseConnection,
+    functional_group_ids: &[u32],
+) -> Vec<u32> {
+    let mut ids = filter_by_functional_groups(structure::Entity::find(), functional_group_ids)
+        .all(db)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|model| model.id)
+        .collect::<Vec<_>>();
+    ids.sort();
+    ids
+}
+
+/// 名称到官能团 ID。
+async fn functional_group_id(db: &DatabaseConnection, name: &str) -> u32 {
+    functional_group::Entity::find()
+        .filter(functional_group::Column::Name.eq(name))
+        .one(db)
+        .await
+        .unwrap()
+        .unwrap()
+        .id
+}
+
+#[test]
+fn functional_group_vocabulary_classifies_reference_molecules() {
+    let groups = functional_groups::DEFAULT_FUNCTIONAL_GROUPS
+        .iter()
+        .enumerate()
+        .map(|(index, (_, smarts))| (index as u32, smarts.to_string()))
+        .collect::<Vec<_>>();
+    let names = |smiles: &str| {
+        let matched = chemistry::matching_functional_groups(&[smiles.to_string()], &groups)
+            .unwrap()
+            .remove(0);
+        matched
+            .into_iter()
+            .map(|id| functional_groups::DEFAULT_FUNCTIONAL_GROUPS[id as usize].0.to_string())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(names("O=[N+]([O-])c1ccccc1"), vec!["硝基", "苯环"]);
+    // 硝酸酯不应被误判为硝基或羟基
+    assert_eq!(
+        names("O=[N+]([O-])OCC(CO[N+](=O)[O-])O[N+](=O)[O-]"),
+        vec!["硝酸酯"]
+    );
+    // 酯的氧不应被误判为醚键
+    assert_eq!(names("CCOC(=O)C"), vec!["酯基", "羰基", "乙氧基"]);
+    assert_eq!(names("Nc1ccccc1"), vec!["伯胺", "芳香胺", "苯环"]);
+    assert_eq!(names("O=[N+]([O-])[O-].[K+]"), vec!["硝酸根离子"]);
+}
+
+#[tokio::test]
+async fn functional_groups_follow_structure_smiles() {
+    let (db, path) = temp_db("functional_groups_smiles").await;
+    assert_eq!(
+        functional_group::Entity::find().count(&db).await.unwrap(),
+        35
+    );
+
+    let nitrobenzene = insert_structure(&db, "硝基苯", "C6H5NO2", "O=[N+]([O-])c1ccccc1", 0).await;
+    functional_groups::match_structures(&db, &[(nitrobenzene, Some("O=[N+]([O-])c1ccccc1".to_string()))])
+        .await
+        .unwrap();
+    assert_eq!(
+        structure_functional_group_names(&db, nitrobenzene).await,
+        vec!["硝基", "苯环"]
+    );
+
+    // SMILES 改变后关联随之重建
+    functional_groups::match_structures(&db, &[(nitrobenzene, Some("Nc1ccccc1".to_string()))])
+        .await
+        .unwrap();
+    assert_eq!(
+        structure_functional_group_names(&db, nitrobenzene).await,
+        vec!["伯胺", "芳香胺", "苯环"]
+    );
+
+    // SMILES 被清空后不再命中任何官能团
+    functional_groups::match_structures(&db, &[(nitrobenzene, None)]).await.unwrap();
+    assert!(structure_functional_group_names(&db, nitrobenzene).await.is_empty());
+    close_temp_db(db, path).await;
+}
+
+#[tokio::test]
+async fn functional_group_backfill_and_removal() {
+    let (db, path) = temp_db("functional_groups_backfill").await;
+    let benzene = insert_structure(&db, "苯", "C6H6", "c1ccccc1", 0).await;
+    let ester = insert_structure(&db, "乙酸乙酯", "C4H8O2", "CCOC(=O)C", 0).await;
+    functional_groups::rematch_all(&db).await.unwrap();
+
+    let ethyl_ester = functional_group::ActiveModel {
+        id: ActiveValue::not_set(),
+        name: ActiveValue::set("乙酯基".to_string()),
+        smarts: ActiveValue::set("[CX3](=O)OCC".to_string()),
+    }
+    .insert(&db)
+    .await
+    .unwrap()
+    .id;
+    functional_groups::rematch_groups(&db, &[ethyl_ester]).await.unwrap();
+
+    assert_eq!(
+        structure_functional_group_names(&db, ester).await,
+        vec!["酯基", "羰基", "乙氧基", "乙酯基"]
+    );
+    assert_eq!(structure_functional_group_names(&db, benzene).await, vec!["苯环"]);
+
+    delete_functional_group(&db, ethyl_ester).await.unwrap();
+    assert_eq!(
+        structure_functional_group_names(&db, ester).await,
+        vec!["酯基", "羰基", "乙氧基"]
+    );
+    assert!(
+        functional_group::Entity::find_by_id(ethyl_ester)
+            .one(&db)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    close_temp_db(db, path).await;
+}
+
+#[tokio::test]
+async fn functional_group_search_requires_every_selected_group() {
+    let (db, path) = temp_db("functional_groups_search").await;
+    let nitrobenzene = insert_structure(&db, "硝基苯", "C6H5NO2", "O=[N+]([O-])c1ccccc1", 0).await;
+    let aniline = insert_structure(&db, "苯胺", "C6H7N", "Nc1ccccc1", 0).await;
+    let ester = insert_structure(&db, "乙酸乙酯", "C4H8O2", "CCOC(=O)C", 0).await;
+    functional_groups::rematch_all(&db).await.unwrap();
+
+    let nitro = functional_group_id(&db, "硝基").await;
+    let benzene_ring = functional_group_id(&db, "苯环").await;
+    let primary_amine = functional_group_id(&db, "伯胺").await;
+
+    assert!(search_ids_by_functional_groups(&db, &[]).await == vec![nitrobenzene, aniline, ester]);
+    assert_eq!(
+        search_ids_by_functional_groups(&db, &[nitro]).await,
+        vec![nitrobenzene]
+    );
+    assert_eq!(
+        search_ids_by_functional_groups(&db, &[nitro, benzene_ring]).await,
+        vec![nitrobenzene]
+    );
+    assert_eq!(
+        search_ids_by_functional_groups(&db, &[benzene_ring]).await,
+        vec![nitrobenzene, aniline]
+    );
+    assert!(search_ids_by_functional_groups(&db, &[nitro, primary_amine])
+        .await
+        .is_empty());
+    // 分组查询也要能正确计数（分页总数来自包一层的 COUNT(*)）
+    let paginator = filter_by_functional_groups(structure::Entity::find(), &[benzene_ring]).paginate(&db, 100);
+    assert_eq!(paginator.num_items().await.unwrap(), 2);
     close_temp_db(db, path).await;
 }

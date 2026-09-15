@@ -42,8 +42,8 @@ export function setProperty(model: Property) {
     return invoke()<null>("set_property", { model })
 }
 
-export function searchStructure(pageSize: number, pageNumber: number, keyword: string | null, maxCharge: number, minCharge: number) {
-    return invoke()<[Structure[], number]>("search_structure", { pageSize,pageNumber,keyword,maxCharge,minCharge })
+export function searchStructure(pageSize: number, pageNumber: number, keyword: string | null, maxCharge: number, minCharge: number, functionalGroupIds: number[]) {
+    return invoke()<[Structure[], number]>("search_structure", { pageSize,pageNumber,keyword,maxCharge,minCharge,functionalGroupIds })
 }
 
 export function getStructureDetail(id: number) {
@@ -57,6 +57,34 @@ export function generateStructureFromSmiles(id: number, smiles: string) {
     return invoke()<SmilesInfo>("generate_structure_from_smiles", { id,smiles })
 }
 
+/**
+ * 列出全部官能团。
+ */
+export function listFunctionalGroups() {
+    return invoke()<FunctionalGroup[]>("list_functional_groups")
+}
+
+/**
+ * 新增官能团，并对全部既有结构回填该官能团的匹配结果。
+ */
+export function createFunctionalGroup(name: string, smarts: string) {
+    return invoke()<number>("create_functional_group", { name,smarts })
+}
+
+/**
+ * 删除官能团及其全部关联。
+ */
+export function removeFunctionalGroup(id: number) {
+    return invoke()<null>("remove_functional_group", { id })
+}
+
+/**
+ * 按当前词表重算全部结构的官能团关联。
+ */
+export function rematchFunctionalGroups() {
+    return invoke()<null>("rematch_functional_groups")
+}
+
 export function exportToFolder(folderPath: string) {
     return invoke()<null>("export_to_folder", { folderPath })
 }
@@ -68,6 +96,7 @@ export function importFromFolder(folderPath: string) {
 export type Component = { structure_id: number; component_id: number; count: number }
 export type Structure = { id: number; name: string | null; formula: string; smiles: string | null; charge: number }
 export type Property = { structure_id: number; decomp_temp: string | null; density: string | null; diss_temp: string | null; formation_enthalpy: string | null; impact_sensitive: string | null; friction_sensitivity: string | null; det_velocity: string | null; det_pressure: string | null; n_content: string | null; o_content: string | null; no_content: string | null; references: string | null; remarks: string | null }
+export type FunctionalGroup = { id: number; name: string; smarts: string }
 /**
  * SMILES 中一个互不连接的片段。
  */
