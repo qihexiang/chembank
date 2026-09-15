@@ -1,10 +1,10 @@
-import { Button, ButtonGroup, Checkbox, FormControlLabel, FormGroup, Grid2, TextField, Typography } from "@mui/material";
+import { Box, Button, ButtonGroup, Grid2, Slider, TextField, Typography } from "@mui/material";
 import { confirm, message, open, save } from "@tauri-apps/api/dialog";
 import { useEffect, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router";
 import { createStructure, importFromFolder, removeStructure, resetDatabase, searchStructure } from "./bindings";
-import useFetch from "./useFetch";
 import rdkitModule from "./rdkit";
+import useFetch from "./useFetch";
 
 
 
@@ -13,9 +13,7 @@ export default function Home() {
     const [searchParams] = useSearchParams();
     const page = Number(searchParams.get("page") ?? "0");
     const [keyword, setKeyword] = useState<string | null>(null)
-    const [expandMode, setExpandMode] = useState(false);
-    const minCharge = expandMode ? -10 : 0
-    const maxCharge = expandMode ? 10 : 0
+    const [[minCharge, maxCharge], setChargeRange] = useState([0, 0]);
     const [[structures, count], refreshList] = useFetch(async () => {
         const processedKeyword = await rdkitModule.then(
             rdkit => keyword !== null ? rdkit.get_mol(keyword) : null
@@ -77,9 +75,23 @@ export default function Home() {
             </Grid2>
             <Grid2 container alignItems={"center"} flexDirection={"row"} size={12} spacing={2}>
                 <TextField sx={{ width: 512 }} placeholder="输入名称、分子式或SMILES查询" label="关键词（名称/分子式/SMILES）" value={keyword ?? ""} onChange={(e) => { if (e.target.value === "") { setKeyword(null) } else { setKeyword(e.target.value) } }}></TextField>
-                <FormGroup>
-                    <FormControlLabel label="显示离子" control={<Checkbox checked={expandMode} onClick={() => setExpandMode(!expandMode)}></Checkbox>}></FormControlLabel>
-                </FormGroup>
+                <Box sx={{ width: 192 }}> 
+                    <Typography variant="h5">电荷范围</Typography>
+                    <Slider
+                    aria-labelledby="charge_label"
+                    marks={new Array(21)
+                        .map((_, index) => index - 10)
+                        .map((value) => ({ value, label: String(value) }))}
+                    valueLabelDisplay="on"
+                    min={-10}
+                    max={10}
+                    step={1}
+                    value={[minCharge, maxCharge]}
+                    onChange={(_, v) =>
+                        setChargeRange(v as [number, number])
+                    }
+                ></Slider>
+                </Box>
             </Grid2>
         </Grid2>
         <Grid2>

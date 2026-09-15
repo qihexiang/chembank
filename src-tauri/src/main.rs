@@ -8,7 +8,7 @@ use std::{
 };
 
 use sea_orm::{
-    prelude::Expr, ActiveModelTrait, ActiveValue, ColumnTrait, Condition, ConnectionTrait, Database, DatabaseConnection, EntityTrait, ModelTrait, PaginatorTrait, QueryFilter, QueryOrder, Schema, TransactionTrait
+    prelude::Expr, ActiveModelTrait, ActiveValue, ColumnTrait, ConnectionTrait, Database, DatabaseConnection, EntityTrait, ModelTrait, PaginatorTrait, QueryFilter, QueryOrder, Schema, TransactionTrait
 };
 use skip_bom::{BomType, SkipEncodingBom};
 use tauri::State;
