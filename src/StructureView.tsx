@@ -37,6 +37,16 @@ async function smilesToCanonical(smiles: string) {
     return mol?.get_smiles() ?? null
 }
 
+// 阴、阳离子按电荷数配平的最小整数数目，例如 Na+ 与 CO3^2- 得到 2 与 1
+function balancedIonCounts(cationCharge: number, anionCharge: number) {
+    let divisor = cationCharge
+    let remainder = -anionCharge
+    while (remainder !== 0) {
+        [divisor, remainder] = [remainder, divisor % remainder]
+    }
+    return { cation: -anionCharge / divisor, anion: cationCharge / divisor }
+}
+
 async function updateToDB(state: ViewState) {
     const { structure, image, property } = state;
     await updateStructure(structure.id, structure.name, structure.formula, structure.smiles && await smilesToCanonical(structure.smiles), structure.charge);
@@ -96,6 +106,32 @@ export default function StructureView() {
         }
     );
 
+    // 由 SMILES 生成各项信息，并同步子结构列表
+    const generateFromSmiles = async (smiles: string) => {
+        const info = await generateStructureFromSmiles(state.structure.id, smiles);
+        setState(current => ({
+            ...current,
+            structure: {
+                ...current.structure,
+                formula: info.formula,
+                charge: info.formal_charge,
+                smiles,
+            },
+            property: {
+                ...current.property,
+                // 质量分数（0–1）转为属性栏使用的百分含量
+                n_content: (info.n_mass_fraction * 100).toFixed(2),
+                o_content: (info.o_mass_fraction * 100).toFixed(2),
+            },
+            image: {
+                structure_id: current.structure.id,
+                image: [...new TextEncoder().encode(info.svg)],
+                filename: "rdkit.svg",
+            },
+        }))
+        await reloadLinks()
+    }
+
     useEffect(() => {
         if (currentId !== null) {
             refresh()
@@ -116,6 +152,12 @@ export default function StructureView() {
             })
         }
     }, [])
+
+    // 仅当子结构恰好含一种阴离子和一种阳离子、且都存有 SMILES 时才能自动配平
+    const ions = state.components.map(([, structure]) => structure).filter((structure): structure is Structure => structure !== null)
+    const anions = ions.filter(ion => ion.charge < 0)
+    const cations = ions.filter(ion => ion.charge > 0)
+    const balanceable = ions.length === state.components.length && anions.length === 1 && cations.length === 1 && ions.every(ion => ion.smiles !== null)
 
     if (currentId === null) {
         return <Box>
@@ -194,28 +236,7 @@ export default function StructureView() {
                     }}>选择图片</Button>
                     {state.structure.smiles !== null ? <Button variant={"contained"} color="secondary" onClick={async () => {
                         try {
-                            const info = await generateStructureFromSmiles(state.structure.id, state.structure.smiles!);
-                            setState(current => ({
-                                ...current,
-                                structure: {
-                                    ...current.structure,
-                                    formula: info.formula,
-                                    charge: info.formal_charge,
-                                },
-                                property: {
-                                    ...current.property,
-                                    // 质量分数（0–1）转为属性栏使用的百分含量
-                                    n_content: (info.n_mass_fraction * 100).toFixed(2),
-                                    o_content: (info.o_mass_fraction * 100).toFixed(2),
-                                },
-                                image: {
-                                    structure_id: current.structure.id,
-                                    image: [...new TextEncoder().encode(info.svg)],
-                                    filename: "rdkit.svg",
-                                },
-                            }))
-                            // 片段登记在后台完成，重新读取子结构列表
-                            await reloadLinks()
+                            await generateFromSmiles(state.structure.smiles!)
                         } catch (e) {
                             await message(String(e))
                         }
@@ -282,6 +303,20 @@ export default function StructureView() {
                             }
                             navigate(`/component?component_of=${state.structure.id}`)
                         }}>添加子结构</Button>
+                        <Button variant="contained" disabled={!balanceable} onClick={async () => {
+                            try {
+                                const { cation: cationCount, anion: anionCount } = balancedIonCounts(cations[0].charge, anions[0].charge)
+                                const smiles = state.components
+                                    .map(([component, structure]) => {
+                                        const count = structure!.id === cations[0].id ? cationCount : structure!.id === anions[0].id ? anionCount : component.count
+                                        return new Array(count).fill(structure!.smiles).join(".")
+                                    })
+                                    .join(".")
+                                await generateFromSmiles(smiles)
+                            } catch (e) {
+                                await message(String(e))
+                            }
+                        }}>自动配平电荷</Button>
                     </Box>
                 </Grid2>
             </Box>
@@ -301,13 +336,17 @@ export default function StructureView() {
 
 function ComponentItem(props: { component: Component, structure: Structure, callback: () => void, ro: boolean }) {
     const navigate = useNavigate();
-    const [component, updateComponent] = useState(props.component)
-    const { structure } = props;
+    const { structure, component: stored } = props;
+    const [count, setCount] = useState(stored.count)
     const [detail] = useFetch(() => getStructureDetail(structure.id), [structure, null, null, [], []], [structure.id])
     const image = detail[2];
+    // 数目可能被外部改动（例如自动配平电荷），需要跟随最新的值
     useEffect(() => {
-        setComponent(component.structure_id, component.component_id, component.count).then(props.callback)
-    }, [component])
+        setCount(stored.count)
+    }, [stored.count])
+    useEffect(() => {
+        setComponent(stored.structure_id, stored.component_id, count).then(props.callback)
+    }, [count])
     return <Box gap={1} width={256} display={"flex"} flexDirection={"column"} alignItems={"stretch"} justifyContent={"stretch"}>
         <Box height={256} display={"flex"} alignItems={"center"} justifyContent={"center"}>{
             image !== null ? <img style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain" }} src={URL.createObjectURL(new Blob([Uint8Array.from(image.image)], { type: mime.getType(image.filename) ?? `image/png` }))}></img> : <Typography>图像未上传</Typography>
@@ -316,10 +355,8 @@ function ComponentItem(props: { component: Component, structure: Structure, call
         <Typography>分子式：{structure.formula}</Typography>
         {structure.smiles !== null ? <Typography>SMILES：{structure.smiles}</Typography> : null}
         {structure.charge !== null ? <Typography>电荷：{structure.charge}</Typography> : null}
-        <TextField fullWidth label="数量" value={component.count} onChange={async (e) => {
-            updateComponent({ ...component, count: Number(e.target.value) })
-        }}></TextField>
-        {props.ro ? null : <Button variant="contained" color="error" onClick={() => deleteComponent(component.structure_id, component.component_id).then(props.callback)}>删除</Button>}
+        <TextField fullWidth label="数量" value={count} onChange={(e) => setCount(Number(e.target.value))}></TextField>
+        {props.ro ? null : <Button variant="contained" color="error" onClick={() => deleteComponent(stored.structure_id, stored.component_id).then(props.callback)}>删除</Button>}
         <Button variant="contained" color="info" onClick={() => navigate(`/structure?id=${structure.id}`)}>查看</Button>
     </Box>
 }
