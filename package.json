@@ -7,6 +7,7 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
+    "stage-runtime": "node scripts/stage-python-runtime.mjs",
     "tauri": "tauri"
   },
   "dependencies": {

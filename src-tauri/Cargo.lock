@@ -462,6 +462,7 @@ dependencies = [
  "csv",
  "entities",
  "pyo3",
+ "pyo3-build-config",
  "sea-orm",
  "sea-schema",
  "serde",

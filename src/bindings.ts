@@ -93,6 +93,10 @@ export function importFromFolder(folderPath: string) {
     return invoke()<null>("import_from_folder", { folderPath })
 }
 
+/**
+ * 由 SMILES 解析得到的结构信息。
+ */
+export type SmilesInfo = { formula: string; formal_charge: number; n_mass_fraction: number; o_mass_fraction: number; svg: string; fragments: Fragment[] }
 export type Component = { structure_id: number; component_id: number; count: number }
 export type Structure = { id: number; name: string | null; formula: string; smiles: string | null; charge: number }
 export type Property = { structure_id: number; decomp_temp: string | null; density: string | null; diss_temp: string | null; formation_enthalpy: string | null; impact_sensitive: string | null; friction_sensitivity: string | null; det_velocity: string | null; det_pressure: string | null; n_content: string | null; o_content: string | null; no_content: string | null; references: string | null; remarks: string | null }
@@ -101,8 +105,4 @@ export type FunctionalGroup = { id: number; name: string; smarts: string }
  * SMILES 中一个互不连接的片段。
  */
 export type Fragment = { smiles: string; formula: string; formal_charge: number; count: number }
-/**
- * 由 SMILES 解析得到的结构信息。
- */
-export type SmilesInfo = { formula: string; formal_charge: number; n_mass_fraction: number; o_mass_fraction: number; svg: string; fragments: Fragment[] }
 export type Image = { structure_id: number; filename: string; image: number[] }

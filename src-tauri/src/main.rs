@@ -5,7 +5,7 @@ use std::{
     collections::HashMap,
     fs::{self, File},
     io::{Read, Write},
-    path::PathBuf,
+    path::{Path, PathBuf},
 };
 
 use sea_orm::{
@@ -22,17 +22,34 @@ mod functional_groups;
 
 struct AppState {
     db: Mutex<Option<DatabaseConnection>>,
+    /// 数据库文件位置，与启动方式（工作目录）无关。
+    database_path: PathBuf,
+}
+
+/// 数据库文件名，存放于用户本地数据目录。
+const DATABASE_FILE: &str = "chembank.db";
+
+/// SQLite 连接串；Windows 路径统一用正斜杠，避免反斜杠被当作转义。
+fn database_url(path: &Path) -> String {
+    format!("sqlite:{}?mode=rwc", path.to_string_lossy().replace('\\', "/"))
 }
 
 #[tokio::main]
 async fn main() {
-    let db = Database::connect("sqlite:chembank.db?mode=rwc")
-        .await
-        .unwrap();
+    let context = tauri::generate_context!();
+    // 数据库放在用户数据目录而不是可执行文件旁：安装到 Program Files 后目录不可写，
+    // 且工作目录会随启动方式（快捷方式、文件关联）变化，数据位置必须与两者无关。
+    let data_dir = tauri::api::path::app_local_data_dir(context.config())
+        .expect("无法确定用户数据目录，请确认当前用户配置文件正常");
+    fs::create_dir_all(&data_dir)
+        .unwrap_or_else(|error| panic!("无法创建用户数据目录 {}：{error}", data_dir.display()));
+    let database_path = data_dir.join(DATABASE_FILE);
+    let db = Database::connect(database_url(&database_path)).await.unwrap();
     let _ = init_db(&db).await;
     tauri::Builder::default()
         .manage(AppState {
             db: Mutex::new(Some(db)),
+            database_path,
         })
         .invoke_handler(tauri::generate_handler![
             structure_count,
@@ -54,7 +71,7 @@ async fn main() {
             export_to_folder,
             import_from_folder,
         ])
-        .run(tauri::generate_context!())
+        .run(context)
         .expect("error while running tauri application");
 }
 
@@ -65,17 +82,16 @@ async fn reset_database(state: State<'_, AppState>) -> Result<(), String> {
     if let Some(db) = db.take() {
         db.close().await.map_err(|e| format!("无法关闭当前数据库，请确认磁盘空间充足，或强制重启程序，但可能导致最近的部分操作丢失, 详细信息：{:#?}", e))?;
     };
-    tokio::fs::remove_file("chembank.db")
+    let path = state.database_path.as_path();
+    tokio::fs::remove_file(path)
         .await
         .map_err(|e| format!("无法删除旧的数据库，原因如下：\n{:#?}", e))?;
-    let new_db = Database::connect("sqlite:chembank.db?mode=rwc")
-        .await
-        .map_err(|e| {
-            format!(
-                "无法创建目标数据库，这可能是由于权限问题或文件损坏导致的，详细信息：{:#?}",
-                e
-            )
-        })?;
+    let new_db = Database::connect(database_url(path)).await.map_err(|e| {
+        format!(
+            "无法创建目标数据库，这可能是由于权限问题或文件损坏导致的，详细信息：{:#?}",
+            e
+        )
+    })?;
     init_db(&new_db).await?;
     *db = Some(new_db);
     Ok(())
@@ -970,34 +986,21 @@ async fn init_db(db: &DatabaseConnection) -> Result<(), String> {
     Ok(())
 }
 
+/// 首次启动（空数据库）应当建好表结构并写入预置官能团词表。
 #[tokio::test]
-async fn test_create_db() {
-    let db = Database::connect("sqlite://./chembank.db?mode=rwc")
-        .await
-        .unwrap();
-    init_db(&db).await.unwrap();
-    db.close().await.unwrap();
-}
-
-#[tokio::test]
-async fn write_to_csv() {
-    use std::fs::{create_dir, File};
-    use std::path::Path;
-
-    let db = Database::connect("sqlite:chembank.db").await.unwrap();
-    let base_path = Path::new("./export");
-    let _ = create_dir(base_path);
-    let structures_path = base_path.join("structures.csv");
-    let mut csv_file = File::create(structures_path).unwrap();
-    csv_file.write_all(&[0xEF, 0xBB, 0xBF]).unwrap();
-    let structures = structure::Entity::find().all(&db).await.unwrap();
-    let mut writer = csv::Writer::from_writer(csv_file);
-    for record in structures {
-        writer.serialize(record).unwrap();
-    }
+async fn empty_database_is_initialized_with_vocabulary() {
+    let (db, path) = temp_db("init").await;
+    let groups = functional_group::Entity::find().count(&db).await.unwrap();
+    assert_eq!(
+        groups as usize,
+        functional_groups::DEFAULT_FUNCTIONAL_GROUPS.len()
+    );
+    assert_eq!(structure::Entity::find().count(&db).await.unwrap(), 0);
+    close_temp_db(db, path).await;
 }
 
 /// 新建一份独立的临时数据库，避免影响真实数据。
+#[cfg(test)]
 async fn temp_db(name: &str) -> (DatabaseConnection, PathBuf) {
     let path = std::env::temp_dir().join(format!("chembank_{name}_{}.db", std::process::id()));
     let _ = fs::remove_file(&path);
@@ -1010,11 +1013,13 @@ async fn temp_db(name: &str) -> (DatabaseConnection, PathBuf) {
     (db, path)
 }
 
+#[cfg(test)]
 async fn close_temp_db(db: DatabaseConnection, path: PathBuf) {
     db.close().await.unwrap();
     let _ = fs::remove_file(path);
 }
 
+#[cfg(test)]
 async fn insert_structure(
     db: &DatabaseConnection,
     name: &str,
@@ -1036,6 +1041,7 @@ async fn insert_structure(
 }
 
 /// 库中全部结构的（分子式，SMILES，电荷）。
+#[cfg(test)]
 async fn stored_structures(db: &DatabaseConnection) -> Vec<(String, Option<String>, i8)> {
     let mut structures = structure::Entity::find()
         .select_only()
@@ -1051,6 +1057,7 @@ async fn stored_structures(db: &DatabaseConnection) -> Vec<(String, Option<Strin
 }
 
 /// 指定结构的（子结构ID，数目）。
+#[cfg(test)]
 async fn stored_components(db: &DatabaseConnection, structure_id: u32) -> Vec<(u32, u32)> {
     let mut components = component::Entity::find()
         .select_only()
@@ -1134,6 +1141,7 @@ async fn link_fragments_matches_non_canonical_stored_smiles() {
 }
 
 /// 某结构命中的官能团名称，按词表顺序。
+#[cfg(test)]
 async fn structure_functional_group_names(
     db: &DatabaseConnection,
     structure_id: u32,
@@ -1155,6 +1163,7 @@ async fn structure_functional_group_names(
 }
 
 /// 官能团检索命中的结构 ID，按 ID 升序。
+#[cfg(test)]
 async fn search_ids_by_functional_groups(
     db: &DatabaseConnection,
     functional_group_ids: &[u32],
@@ -1171,6 +1180,7 @@ async fn search_ids_by_functional_groups(
 }
 
 /// 名称到官能团 ID。
+#[cfg(test)]
 async fn functional_group_id(db: &DatabaseConnection, name: &str) -> u32 {
     functional_group::Entity::find()
         .filter(functional_group::Column::Name.eq(name))

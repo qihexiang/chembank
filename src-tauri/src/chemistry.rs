@@ -17,6 +17,9 @@ const SVG_SIZE: u32 = 300;
 /// 氮、氧的原子序数，顺序与 [`element_mass_fractions`] 的返回值一致。
 const NITROGEN: u8 = 7;
 const OXYGEN: u8 = 8;
+/// 随安装包分发的 Python 运行时目录，由 `scripts/stage-python-runtime.mjs` 组装、
+/// `tauri.conf.json` 的 `bundle.resources` 打包，安装后与 `chembank.exe` 同级。
+const BUNDLED_RUNTIME_DIR: &str = "python-runtime";
 
 /// SMILES 中一个互不连接的片段。
 #[derive(Debug, Clone, PartialEq, Serialize, specta::Type)]
@@ -345,43 +348,77 @@ fn unsanitized_parse_succeeds(
 
 fn init_python() {
     PYTHON_INIT.call_once(|| {
-        if let Some(env) = python_env() {
-            // 调用方已显式指定时不做覆盖。
-            if std::env::var_os("PYTHONHOME").is_none() {
-                std::env::set_var("PYTHONHOME", &env.home);
+        match python_env() {
+            // 随包分发的运行时自带标准库与 site-packages，直接指定 PYTHONHOME 即可；
+            // 同时禁用用户级 site-packages，避免宿主环境里的同名包顶替随包的 rdkit。
+            Some(PythonEnv::Bundled(home)) => {
+                std::env::set_var("PYTHONHOME", &home);
+                std::env::set_var("PYTHONNOUSERSITE", "1");
             }
-            if let Some(site_packages) = env.site_packages {
-                if std::env::var_os("PYTHONPATH").is_none() {
-                    std::env::set_var("PYTHONPATH", site_packages);
+            Some(PythonEnv::Interpreter {
+                home,
+                site_packages,
+            }) => {
+                // 调用方已显式指定时不做覆盖。
+                if std::env::var_os("PYTHONHOME").is_none() {
+                    std::env::set_var("PYTHONHOME", &home);
+                }
+                if let Some(site_packages) = site_packages {
+                    if std::env::var_os("PYTHONPATH").is_none() {
+                        std::env::set_var("PYTHONPATH", site_packages);
+                    }
                 }
             }
+            None => {}
         }
         Python::initialize();
     });
 }
 
-struct PythonEnv {
-    home: PathBuf,
-    site_packages: Option<PathBuf>,
+enum PythonEnv {
+    /// 随安装包分发的自包含运行时，标准库与 site-packages 都在同一个目录下。
+    Bundled(PathBuf),
+    /// 系统安装或虚拟环境中的解释器。
+    Interpreter {
+        home: PathBuf,
+        site_packages: Option<PathBuf>,
+    },
 }
 
-/// 解释器位置：运行时环境变量优先，其次编译期的 `PYO3_PYTHON`；均不可用时不干预 CPython 的默认查找。
+/// 解释器位置：随包分发的运行时 > `CHEMBANK_PYTHON`/`PYO3_PYTHON` 指定的解释器 >
+/// 编译期的 `PYO3_PYTHON`；均不可用时不干预 CPython 的默认查找。
 fn python_env() -> Option<PythonEnv> {
+    if let Some(runtime) = bundled_runtime() {
+        return Some(PythonEnv::Bundled(runtime));
+    }
     let interpreter = interpreter_path()?;
     let bin_dir = interpreter.parent()?;
     let env_root = bin_dir.parent()?;
     let pyvenv_cfg = env_root.join("pyvenv.cfg");
     // 虚拟环境：`home` 指向基础解释器目录，包目录则在虚拟环境内。
     if pyvenv_cfg.is_file() {
-        return Some(PythonEnv {
+        return Some(PythonEnv::Interpreter {
             home: venv_base_home(&pyvenv_cfg)?,
             site_packages: Some(env_root.join("Lib").join("site-packages")),
         });
     }
-    Some(PythonEnv {
+    Some(PythonEnv::Interpreter {
         home: bin_dir.to_path_buf(),
         site_packages: None,
     })
+}
+
+/// 随包分发的运行时目录：安装后与 `chembank.exe` 同级，开发时位于 crate 目录。
+/// 以标准库文件是否存在判定是否已组装；未组装时返回 `None`，按系统解释器处理。
+fn bundled_runtime() -> Option<PathBuf> {
+    let mut candidates = Vec::new();
+    if let Some(dir) = std::env::current_exe().ok().and_then(|exe| exe.parent().map(Path::to_path_buf)) {
+        candidates.push(dir.join(BUNDLED_RUNTIME_DIR));
+    }
+    candidates.push(Path::new(env!("CARGO_MANIFEST_DIR")).join(BUNDLED_RUNTIME_DIR));
+    candidates
+        .into_iter()
+        .find(|dir| dir.join("Lib").join("os.py").is_file())
 }
 
 fn interpreter_path() -> Option<PathBuf> {
@@ -406,6 +443,11 @@ fn venv_base_home(pyvenv_cfg: &Path) -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
+    use pyo3::types::PyAnyMethods;
+    use pyo3::Python;
+
     use super::{
         analyze_smiles, canonical_smiles_batch, matching_functional_groups, validate_smarts,
         Fragment,
@@ -425,6 +467,28 @@ mod tests {
     #[test]
     fn formulas_are_canonical() {
         assert_eq!(formula("c1ccccc1"), formula("C1=CC=CC=C1"));
+    }
+
+    /// 组装了运行时时，内嵌解释器必须来自随包目录，而不是宿主机上碰巧存在的 Python。
+    #[test]
+    fn uses_bundled_runtime_when_staged() {
+        let Some(runtime) = super::bundled_runtime() else {
+            eprintln!("未组装 python-runtime，跳过随包运行时校验");
+            return;
+        };
+        // 先走一次正常调用，确保解释器是由 init_python 按随包运行时的环境变量启动的。
+        analyze_smiles("c1ccccc1").unwrap();
+        let prefix: PathBuf = Python::attach(|py| {
+            py.import("sys")
+                .and_then(|sys| sys.getattr("prefix"))
+                .and_then(|prefix| prefix.extract())
+        })
+        .unwrap();
+        assert_eq!(
+            std::fs::canonicalize(&prefix).unwrap(),
+            std::fs::canonicalize(&runtime).unwrap(),
+            "内嵌解释器未使用随包分发的运行时"
+        );
     }
 
     #[test]

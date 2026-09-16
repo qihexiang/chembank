@@ -34,6 +34,13 @@ jobs:
       with:
         node-version: '22'
 
+    # 链接进 exe 的 CPython 必须与随包运行时同系列（3.12），否则 build.rs 会中止构建。
+    - name: Set up Python
+      id: setup-python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+
     - name: Set up Rust
       uses: actions-rs/toolchain@v1
       with:
@@ -66,14 +73,34 @@ jobs:
           src-tauri/target
         key: cargo
 
+    # 组装内置 Python 运行时（下载 CPython + 安装 rdkit）耗时较长，按组装脚本内容缓存。
+    - name: Cache for Python runtime
+      uses: actions/cache@v3
+      with:
+        path: src-tauri/python-runtime
+        key: python-runtime-${{ hashFiles('scripts/stage-python-runtime.mjs') }}
+
     - name: Build Tauri project
+      env:
+        PYO3_PYTHON: ${{ steps.setup-python.outputs.python-path }}
       run: pnpm tauri build
+
+    # 安装包才是完整产物：运行时与解释器 DLL 作为 resources 放在 exe 同级目录。
+    - name: Locate installer
+      id: installer
+      shell: pwsh
+      run: |
+        $setup = Get-ChildItem -Path src-tauri/target/release/bundle/nsis -Filter *-setup.exe | Select-Object -First 1
+        if (-not $setup) { throw "未找到 NSIS 安装包，请检查 pnpm tauri build 的输出" }
+        "path=$($setup.FullName)" >> $env:GITHUB_OUTPUT
+        "name=$($setup.Name)" >> $env:GITHUB_OUTPUT
+
     - name: Upload Release Asset
       uses: actions/upload-release-asset@v1
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       with:
         upload_url: ${{ steps.create_release.outputs.upload_url }}
-        asset_path: src-tauri/target/release/chembank.exe
-        asset_name: chembank.exe
+        asset_path: ${{ steps.installer.outputs.path }}
+        asset_name: ${{ steps.installer.outputs.name }}
         asset_content_type: application/octet-stream

@@ -10,6 +10,7 @@
 
 - Node.js >= 22.13.1
 - Rust >= 1.84.0
+- Python 3.12（仅编译期需要，用于链接内嵌解释器；最终用户无需安装）
 
 VSCode插件：
 
@@ -30,20 +31,31 @@ VSCode插件：
 
 `pnpm tauri dev`
 
+开发时若已组装内置运行时（见下节）则直接使用，否则回退到系统 Python，需要系统 Python 3.12 中安装有 rdkit。
+
+### 构建发布
+
+`pnpm tauri build` 会先执行 `pnpm stage-runtime`，由`scripts/stage-python-runtime.mjs`从 python-build-standalone 下载 CPython 3.12，再安装固定版本的 rdkit 与 numpy，组装成`src-tauri/python-runtime/`；随后`tauri.conf.json`中`bundle.resources`会把该目录与解释器 DLL 打进 NSIS 安装包。安装后二者与`chembank.exe`同级，程序通过`PYTHONHOME`指向该目录，最终用户无需安装 Python 或 rdkit。
+
+- 组装结果由`.staged.json`戳记判定，重复构建直接跳过；需要重建时执行`pnpm stage-runtime -- --force`。
+- 编译链接的 CPython 由构建机的`PYO3_PYTHON`或 PATH 中的`python`决定，`build.rs`会校验其与随包运行时同系列，不一致时中止构建并提示。
+- 运行时目录与解释器 DLL 已加入`.gitignore`，不随仓库分发。
+
 ## 示例文件
 
 - `example/ionics`：简单离子化合物库，可以通过软件的导入功能从该目录导入数据库
 
 ## 导入导出格式
 
-导出目录中包含三个CSV格式的文件和一个图片目录：
+导出目录中包含四个CSV格式的文件和一个图片目录：
 
 - `structures.csv`：分子基本信息，ID、名称、分子式、SMILES和电荷数
 - `properties.csv`：分子属性信息，包含于结构表对应的ID以及其他详细信息
 - `components.csv`：分子的子结构关系表
+- `functional_groups.csv`：官能团词表（名称与 SMARTS），导入时按此重建词表并重新匹配全部结构
 - `images`：图片目录，目录下的子目录名称与结构ID对应，每个子目录内包含对应的图片文件
 
-三个CSV文件均编码为UTF-8 BOM格式，可以在Excel中打开，如果使用其他仅支持UTF-8编码的程序处理时，应先跳过文件头的BOM标记。
+CSV文件均编码为UTF-8 BOM格式，可以在Excel中打开，如果使用其他仅支持UTF-8编码的程序处理时，应先跳过文件头的BOM标记。
 
 ## 待办列表
 
@@ -80,3 +92,6 @@ VSCode插件：
     - [ ] 合并导出的结构表和属性表
     - [ ] 进度显示优化
   - [x] 数据库重置
+- [x] 发布
+  - [x] 安装包内置 Python 与 RDKit 运行时，用户无需配置
+  - [x] 数据库改存用户数据目录，与安装目录、启动方式无关

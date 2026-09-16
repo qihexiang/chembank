@@ -9,6 +9,8 @@ edition = "2021"
 
 [build-dependencies]
 tauri-build = { version = "1", features = [] }
+# build.rs 用它读取 Cargo 实际链接的 CPython 版本，校验与随包分发的运行时一致。
+pyo3-build-config = "0.29.2"
 
 [dependencies]
 tauri = { version = "1", features = [ "dialog-confirm", "path-all", "fs-read-file", "dialog-message", "dialog-save", "dialog-open", "shell-open"] }

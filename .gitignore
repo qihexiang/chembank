@@ -24,3 +24,10 @@ dist-ssr
 *.sw?
 
 *.db
+
+# 由 scripts/stage-python-runtime.mjs 组装、随安装包分发的 Python 运行时
+.cache
+src-tauri/python-runtime
+src-tauri/python312.dll
+src-tauri/vcruntime140.dll
+src-tauri/vcruntime140_1.dll
